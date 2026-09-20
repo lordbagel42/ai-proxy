@@ -25,7 +25,8 @@
     "start:server": "node dist-server/main.mjs",
     "db:server": "node dist-server/db-cli.mjs",
     "test:server": "vitest run --project node test/server-",
-    "test:server:docker": "node tools/test-server-docker.mjs"
+    "test:server:docker": "node tools/test-server-docker.mjs",
+    "test:native:docker": "node tools/test-native-docker.mjs"
   },
   "overrides": {
     "@esbuild-kit/core-utils": {

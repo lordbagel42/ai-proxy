@@ -118,6 +118,10 @@ const reasoning = z.object({
   context: z.enum(["auto", "current_turn", "all_turns"]).optional(),
 }).strict();
 const messagePhase = z.enum(["commentary", "final_answer"]).nullable();
+const additionalTools = z.object({
+  type: z.literal("additional_tools"), role: z.literal("developer"),
+  id: z.string().min(1).optional(), tools: z.array(z.unknown()),
+}).strict();
 
 export function parseRequest(raw: unknown, protocol: Protocol): GenerationRequest {
   const body = object(raw, "request");
@@ -150,6 +154,7 @@ export function parseRequest(raw: unknown, protocol: Protocol): GenerationReques
     result.stop = typeof stop === "string" ? [stop] : array(stop, "stop").map((v) => string(v));
   }
   const systems: string[] = [];
+  const embeddedTools: unknown[] = [];
   if (body.system !== undefined) systems.push(textContent(body.system));
   if (body.instructions !== undefined && body.instructions !== null) systems.push(string(body.instructions));
   const input = protocol === "responses" ? body.input : body.messages;
@@ -158,6 +163,17 @@ export function parseRequest(raw: unknown, protocol: Protocol): GenerationReques
   } else {
     for (const value of array(input, protocol === "responses" ? "input" : "messages")) {
       const m = object(value);
+      if (m.type === "additional_tools") {
+        if (protocol !== "responses") invalid("additional_tools requires the Responses API.");
+        const parsed = additionalTools.safeParse(m);
+        if (!parsed.success) invalid("additional_tools must be a developer tool declaration with a tools array.");
+        // Responses Lite puts native tool definitions in developer input items.
+        // Hoist only initial declarations: changing tools inside conversation
+        // history cannot be represented faithfully by our provider-neutral form.
+        if (result.messages.length) invalid("additional_tools must appear before conversation messages.");
+        embeddedTools.push(...parsed.data.tools);
+        continue;
+      }
       if (protocol === "responses" && m.type === "reasoning") {
         if (m.encrypted_content) invalid("Encrypted reasoning from another provider cannot be replayed.");
         continue; // Reasoning summaries are metadata, not assistant conversation text.
@@ -191,6 +207,11 @@ export function parseRequest(raw: unknown, protocol: Protocol): GenerationReques
       if (!parts.length) invalid("Messages must contain content or tool calls.");
       result.messages.push({ role: m.role, content: parts, ...(m.phase !== undefined ? { phase: messagePhase.parse(m.phase) } : {}) });
     }
+  }
+  if (embeddedTools.length) {
+    // Normalize all definitions together to retain namespace/custom mappings and
+    // reject collisions between top-level and embedded tool collections.
+    result.tools = tools([...(body.tools === undefined ? [] : array(body.tools, "tools")), ...embeddedTools], protocol);
   }
   if (!result.messages.length) invalid("At least one conversation message is required.");
   result.system = systems.join("\n\n");

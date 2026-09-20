@@ -35,6 +35,55 @@ describe("conversation translation", () => {
     ] }] }, "anthropic");
     expect(parsed.messages[0]?.content).toEqual([{ type: "image", url: "data:image/png;base64,abc" }, { type: "result", id: "tool_1", content: "ok", isError: false }]);
   });
+  it("preserves Responses Lite additional_tools and complete native tool history", () => {
+    const parsed = parseRequest({ model: "codex", reasoning: { effort: "low", context: "auto" }, input: [
+      { type: "additional_tools", id: "tools_native", role: "developer", tools: [
+        { type: "namespace", name: "functions", tools: [{ type: "function", name: "exec_command", parameters: { type: "object", properties: { cmd: { type: "string" } } } }] },
+        { type: "custom", name: "apply_patch", format: { type: "text" } },
+      ] },
+      { type: "message", role: "developer", content: [{ type: "input_text", text: "Run the requested commands." }] },
+      { type: "message", role: "user", content: [{ type: "input_text", text: "Write and read proof.txt." }] },
+      { type: "function_call", namespace: "functions", name: "exec_command", call_id: "call_write", arguments: '{"cmd":"printf relay-tool-ok > proof.txt"}' },
+      { type: "function_call_output", call_id: "call_write", output: "exit code 0" },
+      { type: "function_call", namespace: "functions", name: "exec_command", call_id: "call_read", arguments: '{"cmd":"cat proof.txt"}' },
+      { type: "function_call_output", call_id: "call_read", output: "relay-tool-ok" },
+    ] }, "responses");
+    expect(parsed.system).toBe("Run the requested commands.");
+    expect(parsed.tools).toMatchObject([
+      { name: "functions__exec_command", namespace: "functions", clientName: "exec_command" },
+      { name: "apply_patch", custom: true },
+    ]);
+    expect(parsed.messages).toHaveLength(5);
+    expect(parsed.messages[1]?.content[0]).toMatchObject({ type: "call", name: "functions__exec_command", id: "call_write" });
+    expect(parsed.messages[4]?.content[0]).toEqual({ type: "result", id: "call_read", content: "relay-tool-ok" });
+    expect(parsed.reasoning).toEqual({ effort: "low", context: "auto" });
+  });
+  it("combines distinct top-level and embedded tool definitions", () => {
+    const parsed = parseRequest({ model: "codex", tools: [{ type: "function", name: "first" }], input: [
+      { type: "additional_tools", role: "developer", tools: [{ type: "function", name: "second" }] },
+      { type: "additional_tools", role: "developer", tools: [{ type: "function", name: "third" }] },
+      { role: "user", content: "Use the tools." },
+    ] }, "responses");
+    expect(parsed.tools.map(tool => tool.name)).toEqual(["first", "second", "third"]);
+  });
+  it.each([
+    { role: "user", tools: [] }, { role: "assistant", tools: [] }, { role: "tool", tools: [] },
+    { role: "developer" }, { role: "developer", tools: null },
+    { role: "developer", tools: [], content: "ignored instruction" },
+    { role: "developer", tools: [{ type: "web_search" }] },
+  ])("rejects malformed or unsupported embedded tool definitions: %j", (item) => {
+    expect(() => parseRequest({ model: "codex", input: [
+      { type: "additional_tools", ...item }, { role: "user", content: "Hello" },
+    ] }, "responses")).toThrow();
+  });
+  it("rejects ambiguous or dynamically scoped additional_tools instead of changing their meaning", () => {
+    const tools = [{ type: "function", name: "exec_command" }];
+    const additional = { type: "additional_tools", role: "developer", tools };
+    expect(() => parseRequest({ model: "codex", tools, input: [additional, { role: "user", content: "Hello" }] }, "responses")).toThrow("Tool names must be unique");
+    expect(() => parseRequest({ model: "codex", input: [additional, additional, { role: "user", content: "Hello" }] }, "responses")).toThrow("Tool names must be unique");
+    expect(() => parseRequest({ model: "codex", input: [{ role: "user", content: "Hello" }, additional] }, "responses")).toThrow("before conversation");
+    expect(() => parseRequest({ model: "codex", messages: [additional, { role: "user", content: "Hello" }] }, "chat")).toThrow("Responses API");
+  });
   it("preserves distinct assistant phases when reconstructing Responses history", () => {
     const parsed = parseRequest({ model: "codex", input: [
       { role: "user", content: "Read the file." },

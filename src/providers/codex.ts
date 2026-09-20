@@ -89,7 +89,7 @@ export function createCodexProvider(env: AppEnv, ctx: ExecutionContext): Provide
         const error = codexStreamRejection(response);
         await response.body?.cancel(); throw error;
       }
-      return releasing(responsesEvents(response.body), release, signal, ctx);
+      return releasing(responsesEvents(response.body, { allowEmptyTerminalOutput: true }), release, signal, ctx);
     } catch (error) {
       await release();
       if (error instanceof ApiError || signal.aborted) throw error;

@@ -62,7 +62,7 @@ type OutputItem = { id: string; done: boolean } & (
 );
 
 /** Decode only text and function tools; hosted tools, refusals and other modalities fail explicitly. */
-export async function* responsesEvents(body: ReadableStream<Uint8Array>): AsyncGenerator<Event> {
+export async function* responsesEvents(body: ReadableStream<Uint8Array>, options: { allowEmptyTerminalOutput?: boolean } = {}): AsyncGenerator<Event> {
   const items = new Map<number, OutputItem>();
   let responseId: string | undefined;
   let nextBlock = 0;
@@ -187,8 +187,14 @@ export async function* responsesEvents(body: ReadableStream<Uint8Array>): AsyncG
       const response = record(data.response);
       if (response.id !== responseId || response.status !== type.slice("response.".length)) invalid();
       if (Array.from(items.values()).some((item) => !item.done)) invalid("The upstream left a Responses output item open.");
-      if (!Array.isArray(response.output) || response.output.length !== items.size) invalid();
-      response.output.forEach((raw, index) => validateSnapshot(items.get(index)!, record(raw)));
+      if (!Array.isArray(response.output)) invalid();
+      // Codex may omit repeated output snapshots at completion by sending [].
+      // Every item has already been finalized and validated above; a supplied
+      // nonempty snapshot must still match that exact ordered output.
+      if (!options.allowEmptyTerminalOutput || response.output.length > 0) {
+        if (response.output.length !== items.size) invalid();
+        response.output.forEach((raw, index) => validateSnapshot(items.get(index)!, record(raw)));
+      }
       if (type === "response.incomplete" && record(response.incomplete_details).reason !== "max_output_tokens") {
         invalid("The upstream could not complete this response.");
       }

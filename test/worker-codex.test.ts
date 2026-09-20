@@ -80,7 +80,7 @@ function responseFixture(contentType: string | null = "text/event-stream") {
     { type: "response.output_text.done", ...coords, text: part.text },
     { type: "response.content_part.done", ...coords, part },
     { type: "response.output_item.done", output_index: 0, item },
-    { type: "response.completed", response: { id, status: "completed", output: [item], usage: { input_tokens: 10, output_tokens: 5 } } },
+    { type: "response.completed", response: { id, status: "completed", output: [], usage: { input_tokens: 10, output_tokens: 5 } } },
   ];
   return new Response(new TextEncoder().encode(events.map((event, sequence_number) => sse({ ...event, sequence_number }, event.type)).join("")), {
     headers: contentType === null ? {} : { "content-type": contentType },

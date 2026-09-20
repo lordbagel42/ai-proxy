@@ -89,6 +89,41 @@ describe("Responses upstream stream", () => {
     expect(result.blocks).toEqual([{ type: "tool", id: "call_read", name: "read_file", arguments: '{"path":"README.md"}' }]);
     expect(result.reason).toBe("tool_calls");
   });
+  it.each([false, true])("accepts Codex's empty terminal output after validated items (tool=%s)", async (tool) => {
+    const events = fixture(tool);
+    (events.at(-1)!.response as JsonObject).output = [];
+    const result = await collect(responsesEvents(stream(events), { allowEmptyTerminalOutput: true }), request());
+    expect(result.blocks).toEqual(tool
+      ? [{ type: "tool", id: "call_read", name: "read_file", arguments: '{"path":"README.md"}' }]
+      : [{ type: "text", text: "Hello 🌱" }]);
+    expect(result.usage).toEqual({ input: 21, output: 7, cached: 8 });
+    expect(result.reason).toBe(tool ? "tool_calls" : "stop");
+    // Generic Responses providers retain full terminal-snapshot validation.
+    await expect(collect(responsesEvents(stream(events)), request())).rejects.toThrow("invalid Responses event");
+  });
+  it.each(["missing", "null", "wrong item", "wrong response", "wrong status", "open item", "text changed"])(
+    "keeps Codex terminal validation for %s", async (change) => {
+      const events = fixture();
+      const terminal = events.at(-1)!.response as JsonObject;
+      terminal.output = [];
+      if (change === "missing") delete terminal.output;
+      if (change === "null") terminal.output = null;
+      if (change === "wrong item") terminal.output = [{ id: "wrong", type: "message", role: "assistant", content: [] }];
+      if (change === "wrong response") terminal.id = "wrong";
+      if (change === "wrong status") terminal.status = "in_progress";
+      if (change === "open item") events.splice(events.findIndex((event) => event.type === "response.output_item.done"), 1);
+      if (change === "text changed") events.find((event) => event.type === "response.output_text.done")!.text = "Different text";
+      await expect(collect(responsesEvents(stream(events), { allowEmptyTerminalOutput: true }), request())).rejects.toMatchObject({ status: 502 });
+    },
+  );
+  it.each([false, true])("validates the final item even when Codex omits the terminal snapshot (tool=%s)", async (tool) => {
+    const events = fixture(tool);
+    (events.at(-1)!.response as JsonObject).output = [];
+    const item = events.find((event) => event.type === "response.output_item.done")!.item as JsonObject;
+    if (tool) item.arguments = '{"path":"changed.txt"}';
+    else item.content = [{ type: "output_text", text: "Changed text", annotations: [] }];
+    await expect(collect(responsesEvents(stream(events), { allowEmptyTerminalOutput: true }), request())).rejects.toMatchObject({ status: 502 });
+  });
   it("tolerates Codex transport metadata before and during an otherwise validated stream", async () => {
     const events = fixture();
     events.unshift({ type: "codex.response.metadata", metadata: { routing: "test" } });

@@ -54,7 +54,7 @@ function anthropicFixture() {
     { type: 'message_stop' },
   ].map(frame);
 }
-function responsesFixture() {
+function responsesFixture(codex = false) {
   const id = 'resp_mock', itemId = 'msg_mock';
   const part = { type: 'output_text', text: 'Docker fixture response', annotations: [] };
   const item = { id: itemId, type: 'message', role: 'assistant', content: [part], status: 'completed' };
@@ -67,7 +67,7 @@ function responsesFixture() {
     { type: 'response.output_text.done', ...coordinates, text: part.text },
     { type: 'response.content_part.done', ...coordinates, part },
     { type: 'response.output_item.done', output_index: 0, item },
-    { type: 'response.completed', response: { id, status: 'completed', output: [item],
+    { type: 'response.completed', response: { id, status: 'completed', output: codex ? [] : [item],
       usage: { input_tokens: 11, output_tokens: 5, input_tokens_details: { cached_tokens: 2 } } } },
   ].map((event, sequence_number) => frame({ ...event, sequence_number }));
 }
@@ -144,7 +144,7 @@ try {
       upstreamRequests++;
       // Real Codex can return valid SSE with no Content-Type header.
       response.writeHead(200, codex ? {} : { 'content-type': 'text/event-stream' });
-      for (const event of anthropic ? anthropicFixture() : responsesFixture()) {
+      for (const event of anthropic ? anthropicFixture() : responsesFixture(codex)) {
         response.write(event);
         await sleep(3);
       }

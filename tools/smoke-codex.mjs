@@ -45,7 +45,7 @@ function responseEvents(useTool, tool, input, turn) {
     events.push({ type: 'response.content_part.done', item_id: item.id, output_index: 0, content_index: 0, part: complete.content[0] });
   }
   events.push({ type: 'response.output_item.done', output_index: 0, item: complete });
-  events.push({ type: 'response.completed', response: { ...response, status: 'completed', output: [complete], usage: { input_tokens: 10, output_tokens: 10, total_tokens: 20 } } });
+  events.push({ type: 'response.completed', response: { ...response, status: 'completed', output: codexWorker ? [] : [complete], usage: { input_tokens: 10, output_tokens: 10, total_tokens: 20 } } });
   return events.map((event, sequence_number) => ({ ...event, sequence_number }));
 }
 

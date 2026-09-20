@@ -243,6 +243,7 @@ Worker invocation logs and traces are enabled with 100% sampling in `wrangler.js
 ```sh
 npm run check        # TypeScript + unit/Worker/client tests + deploy dry run
 npm run test:codex   # Native Codex against Anthropic, Responses, and direct Worker mocks
+npm run test:native:docker # Exact Docker live runner against a local synthetic Node gateway
 npm run types       # Regenerate Workers bindings and runtime types
 npm run auth:generate
 npm run db:generate  # Generate a migration after schema changes
@@ -251,6 +252,8 @@ npm run db:generate  # Generate a migration after schema changes
 Tests cover owner authorization, encrypted ChatGPT credential storage and refresh, browser PKCE and device login, analytics aggregation and cancellation tracking, upstream Responses lifecycle validation, Hack Club's mocked OAuth callback, Better Auth sessions in D1, CSRF checks, key hashing and revocation, allowlist removal, concurrent rate limits, one-time CLI approval, protocol conversion, UTF-8 SSE fragmentation, tools, and stream failure and cancellation.
 
 The Codex smoke test creates an ephemeral database and temporary working directory, runs a harmless shell tool, checks that its result arrives on the next request, and verifies the final streamed answer. It makes no model-provider requests.
+
+The offline native Docker regression requires the client image built with `docker build -f Dockerfile.e2e -t ai-proxy-e2e:codex-0.154.0 .`. It runs the unchanged live-test runner against local synthetic credentials, model metadata, and Codex responses, including the native model picker and two shell actions. Unexpected upstream or OAuth requests are blocked.
 
 Live integration testing runs the native Codex CLI in an isolated Docker container against an already deployed gateway:
 
