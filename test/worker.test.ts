@@ -35,6 +35,19 @@ const sessionHeaders = () => ({ cookie, origin: appEnv.BETTER_AUTH_URL, "content
 const keyHeaders = () => ({ authorization: `Bearer ${token}`, "content-type": "application/json" });
 
 describe("Worker access control and D1", () => {
+  it("freezes every route and scheduled write for migration, including authenticated requests", async () => {
+    const frozen = { MAINTENANCE_MODE: "true" };
+    const before = await env.DB.prepare("SELECT COUNT(*) AS count FROM api_key").first();
+    for (const [path, init] of [
+      ["/api/auth/ok", {}], ["/v1/models", { headers: keyHeaders() }],
+      ["/api/keys", { method: "POST", headers: sessionHeaders(), body: '{"name":"Frozen"}' }],
+    ] as const) expect((await call(path, init, frozen)).status).toBe(503);
+    expect(await (await call("/health", {}, frozen)).json()).toMatchObject({ serving: false });
+    expect(await env.DB.prepare("SELECT COUNT(*) AS count FROM api_key").first()).toEqual(before);
+    await env.DB.prepare("INSERT INTO rate_limit (id, key, count, last_request) VALUES ('maintenance-test', 'maintenance-test', 1, 0)").run();
+    await worker.scheduled({} as ScheduledController, { ...appEnv, ...frozen });
+    expect(await env.DB.prepare("SELECT id FROM rate_limit WHERE id = 'maintenance-test'").first()).not.toBeNull();
+  });
   it("authenticates through Better Auth's generated session schema", async () => {
     expect((await call("/api/auth/ok")).status).toBe(200);
     const response = await call("/api/me", { headers: { cookie } });

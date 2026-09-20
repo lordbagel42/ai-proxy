@@ -1,9 +1,21 @@
 # An allowlist keeps local credentials, source state, and build artifacts out of context.
 **
 !Dockerfile.e2e
+!Dockerfile
 !.dockerignore
+!package.json
+!package-lock.json
+!src/
+!src/**
+!server/
+!server/**
+!public/
+!public/**
+!migrations/
+!migrations/**
 !bin/
 !bin/ai-proxy.mjs
 !bin/codex-models.mjs
 !tools/
 !tools/docker-live.mjs
+!tools/build-server.mjs

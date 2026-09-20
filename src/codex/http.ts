@@ -1,9 +1,9 @@
 import { ApiError } from "../core/errors";
 import type { JsonObject } from "../core/types";
 
-// Match the native Codex protocol identity while identifying this deployment's
-// actual runtime. HTTP Responses does not use the WebSocket beta header.
-export const CLIENT_USER_AGENT = "codex_cli_rs/0.154.0 (Cloudflare Workers; ai-proxy)";
+// Identify this gateway consistently across its Worker and Node runtimes.
+// HTTP Responses does not use the WebSocket beta header.
+export const CLIENT_USER_AGENT = "codex_cli_rs/0.154.0 (ai-proxy)";
 const KNOWN_ERROR_CODES = new Set([
   "unsupported_country_region_territory", "account_deactivated", "account_suspended", "access_denied",
   "insufficient_permissions", "permission_denied", "insufficient_quota", "rate_limit_exceeded",
@@ -63,4 +63,3 @@ export async function codexRejection(response: Response, signal: AbortSignal, op
   return new ApiError(response.status === 429 ? 429 : 502, `Codex returned HTTP ${response.status}.`,
     response.status === 429 ? "rate_limit_error" : "api_error", response.headers.get("retry-after") ?? undefined);
 }
-

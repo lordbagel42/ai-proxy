@@ -3,6 +3,7 @@ node_modules/
 
 # --- Build output / transient local output ---
 dist/
+dist-server/
 coverage/
 .wrangler/
 .cache/

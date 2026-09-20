@@ -1,8 +1,10 @@
 # Friends AI Proxy
 
-A private AI gateway running entirely in a Cloudflare Worker, with Hack Club sign-in, Better Auth sessions, personal API keys, and native Codex CLI support. The Worker connects directly to ChatGPT and other configured providers.
+A private AI gateway with Hack Club sign-in, Better Auth sessions, personal API keys, and native Codex CLI support. It can run in a Cloudflare Worker or as a production Node/Docker server with persistent SQLite. Both runtimes connect directly to ChatGPT and other configured providers.
 
 **Deployment:** [relay.raygen.dev](https://relay.raygen.dev). The owner has connected ChatGPT, but live testing on September 19, 2026 found that ChatGPT returns an HTML HTTP 403 to this Worker’s subscription requests. Live inference is blocked. Account model discovery, native CLI metadata, and protocol handling are implemented and tested against controlled upstreams; the dashboard reports upstream unavailability rather than inventing a model list. See [the integration report](docs/integration-check.md).
+
+**Proxmox migration:** the production server, Docker image, database import tools, standby mode, and Worker migration freeze are available. See [the deployment contract and cutover procedure](docs/proxmox-deployment.md). Runtime/container tests use controlled upstreams; the deployment owner must verify live ChatGPT access from Proxmox before claiming the 403 is resolved.
 
 ## Connect ChatGPT
 
@@ -44,7 +46,7 @@ flowchart LR
   W --> API[Other provider APIs]
 ```
 
-All authentication, credential refresh, protocol conversion, and inference forwarding run in the Worker. Upstream requests originate from Cloudflare.
+On Workers, authentication, credential refresh, protocol conversion, and inference forwarding run at Cloudflare. The server deployment runs the same application on Node and a local SQLite database, with upstream requests originating from its host network.
 
 ChatGPT access and refresh tokens, and pending browser/device login credentials, are encrypted before storage in D1 using the `CODEX_TOKEN_KEY` Worker secret. The Worker refreshes access tokens on demand. D1 locks and version checks coordinate refresh across Worker instances and prevent an interrupted login or refresh from restoring a disconnected account. The browser receives connection status and the sign-in URL or one-time device approval code, never account tokens.
 

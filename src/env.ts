@@ -7,4 +7,5 @@ export type AppEnv = { [K in keyof Env]: Env[K] extends string ? string : Env[K]
   RELAY_SHARED_SECRET?: string;
   CODEX_TOKEN_KEY?: string;
   OWNER_HACKCLUB_ID?: string;
+  MAINTENANCE_MODE?: string;
 };

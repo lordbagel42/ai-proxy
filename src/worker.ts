@@ -201,7 +201,14 @@ export default {
   async fetch(request: Request, env: AppEnv, ctx: ExecutionContext): Promise<Response> {
     const requestId = crypto.randomUUID();
     let response: Response;
-    try { response = await route(request, env, ctx); }
+    try {
+      if (env.MAINTENANCE_MODE === "true") {
+        response = new URL(request.url).pathname === "/health" && request.method === "GET"
+          ? Response.json({ status: "ok", serving: false })
+          : Response.json({ error: { message: "Gateway is paused for migration.", type: "maintenance_error" } },
+            { status: 503, headers: { "retry-after": "60" } });
+      } else response = await route(request, env, ctx);
+    }
     catch (error) {
       const failure = publicError(error);
       if (failure.status >= 500) console.error(JSON.stringify({ requestId, status: failure.status, code: failure.code }));
@@ -217,6 +224,7 @@ export default {
     return response;
   },
   async scheduled(_event: ScheduledController, env: AppEnv) {
+    if (env.MAINTENANCE_MODE === "true") return;
     const now = Date.now();
     await env.DB.batch([
       env.DB.prepare("DELETE FROM cli_login WHERE expires_at < ?").bind(now),

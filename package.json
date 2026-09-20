@@ -15,12 +15,17 @@
     "test:codex": "npm run build && node tools/smoke-codex.mjs && node tools/smoke-codex.mjs --responses && node tools/smoke-codex.mjs --codex-worker",
     "db:generate": "drizzle-kit generate",
     "auth:generate": "npx auth@1.7.5 generate --config ./tools/auth-schema.ts --output ./src/db/schema.ts --yes",
-    "check": "npm run typecheck && npm test && npm run test:client && npm run build",
+    "check": "npm run typecheck && npm test && npm run test:client && npm run build && npm run build:server",
     "build": "wrangler deploy --env \"\" --dry-run --outdir dist",
     "db:migrate": "wrangler d1 migrations apply ai-proxy --local",
     "deploy": "wrangler deploy --env production",
     "test:client": "node --test test/client-models.test.mjs",
-    "test:docker": "node tools/test-docker.mjs"
+    "test:docker": "node tools/test-docker.mjs",
+    "build:server": "node tools/build-server.mjs",
+    "start:server": "node dist-server/main.mjs",
+    "db:server": "node dist-server/db-cli.mjs",
+    "test:server": "vitest run --project node test/server-",
+    "test:server:docker": "node tools/test-server-docker.mjs"
   },
   "overrides": {
     "@esbuild-kit/core-utils": {
@@ -39,6 +44,7 @@
     "@types/node": "^22.20.4",
     "better-call": "^1.4.0",
     "drizzle-kit": "^0.31.10",
+    "esbuild": "0.28.1",
     "miniflare": "^5.20260918.0-alpha",
     "typescript": "^7.0.2",
     "vitest": "^4.1.11",

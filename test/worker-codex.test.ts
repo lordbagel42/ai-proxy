@@ -492,7 +492,7 @@ describe("direct Codex generation from the Worker", () => {
     expect(upstream.headers.get("authorization")).toBe(`Bearer ${mocked.originalAccessToken}`);
     expect(upstream.headers.get("chatgpt-account-id")).toBe("chatgpt-test-account");
     expect(upstream.headers.get("originator")).toBe("codex_cli_rs");
-    expect(upstream.headers.get("user-agent")).toBe("codex_cli_rs/0.154.0 (Cloudflare Workers; ai-proxy)");
+    expect(upstream.headers.get("user-agent")).toBe("codex_cli_rs/0.154.0 (ai-proxy)");
     expect(upstream.headers.has("openai-beta")).toBe(false);
     expect(upstream.headers.has("cookie")).toBe(false);
     expect(upstream.redirect).toBe("manual");

@@ -58,7 +58,7 @@ describe("account Codex model discovery", () => {
     expect(headers.get("authorization")).toBe(`Bearer ${accessToken}`);
     expect(headers.get("ChatGPT-Account-ID")).toBe(accountId);
     expect(headers.get("originator")).toBe("codex_cli_rs");
-    expect(headers.get("user-agent")).toBe("codex_cli_rs/0.154.0 (Cloudflare Workers; ai-proxy)");
+    expect(headers.get("user-agent")).toBe("codex_cli_rs/0.154.0 (ai-proxy)");
     expect(await discover()).toEqual(first);
     expect(fetcher).toHaveBeenCalledTimes(1);
     expect(JSON.stringify(first)).not.toMatch(/private|access_token|refresh_token|account_id/);
