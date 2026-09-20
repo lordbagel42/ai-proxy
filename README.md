@@ -86,30 +86,28 @@ The application does not store prompts, generated text, or tool payloads. Better
 
 ## Native Codex for friends
 
-Install Node.js 22 or newer and the native `codex` CLI. The client is available as `@lordbagel42/ai-proxy` on [GitHub Packages](https://github.com/lordbagel42/ai-proxy/pkgs/npm/ai-proxy). Authenticate with your GitHub username and a personal access token (classic) with `read:packages` and access to the private package:
+Install Node.js 22 or newer and the native `codex` CLI. Install the client from [GitHub Packages](https://github.com/lordbagel42/ai-proxy/pkgs/npm/ai-proxy):
 
 ```sh
-npm login --scope=@lordbagel42 --auth-type=legacy --registry=https://npm.pkg.github.com
-npm install --global @lordbagel42/ai-proxy --registry=https://npm.pkg.github.com
-ai-proxy login --url https://relay.raygen.dev
-ai-proxy codex
+npm install @lordbagel42/ai-proxy@0.1.0
 ```
 
-The package contains only the CLI and model helper, with no runtime npm dependencies. See [client installation and usage](bin/README.md). From a source checkout, the same commands remain available through `npm run client`:
+Then sign in and start Codex:
 
 ```sh
-npm ci
-npm run client -- login --url https://relay.raygen.dev
+npx ai-proxy login --url https://relay.raygen.dev
 # Check the terminal code in your browser, sign in with Hack Club, and approve it.
-npm run client -- codex
+npx ai-proxy codex
 ```
+
+The package contains only the CLI and model helper, with no runtime npm dependencies. See [client installation and usage](bin/README.md). From a source checkout, the same commands remain available through `npm run client`.
 
 The helper launches the **installed native Codex executable** with a Responses provider and injects your personal proxy key. It does not replace Codex or modify your existing Codex configuration or authentication. Other Codex arguments pass through:
 
 ```sh
-npm run client -- models
-npm run client -- codex --model MODEL_ID exec 'Explain this project'
-npm run client -- logout
+npx ai-proxy models
+npx ai-proxy codex --model MODEL_ID exec 'Explain this project'
+npx ai-proxy logout
 ```
 
 Login stores the key in `~/.config/ai-proxy/credentials.json` (or under `XDG_CONFIG_HOME`) with mode `0600`. Logout revokes that key at the proxy and removes the local copy. CLI login codes expire in 10 minutes; approval and redemption are single-use.

@@ -154,7 +154,7 @@ async function refresh() {
     $('usage').textContent = new Intl.NumberFormat().format(profile.usage.requestsToday);
     $('models').textContent = profile.modelCatalogError || profile.models.map((m) => m.id).join(', ') || 'No models available.';
     $('base-url').textContent = profile.baseUrl;
-    $('cli-example').textContent = `npm run client -- login \\\n  --url ${new URL(profile.baseUrl).origin}\n\nnpm run client -- codex`;
+    $('cli-example').textContent = `npm install @lordbagel42/ai-proxy@0.1.0\n\nnpx ai-proxy login \\\n  --url ${new URL(profile.baseUrl).origin}\n\nnpx ai-proxy codex`;
     $('key-count').textContent = `${profile.keys.length} ACTIVE`;
     $('keys').replaceChildren();
     if (!profile.keys.length) { const empty = document.createElement('p'); empty.className = 'empty'; empty.textContent = 'No keys yet. Create one above, or connect your CLI.'; $('keys').append(empty); }
