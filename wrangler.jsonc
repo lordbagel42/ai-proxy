@@ -1,0 +1,76 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "ai-proxy",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-09-19",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "run_worker_first": true,
+    "html_handling": "none"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "ai-proxy",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "redact_query_string": true,
+    "logs": {
+      "enabled": true,
+      "invocation_logs": true
+    },
+    "traces": {
+      "enabled": true,
+      "head_sampling_rate": 1
+    }
+  },
+  "vars": {
+    "BETTER_AUTH_URL": "http://localhost:8787",
+    "ALLOWED_HACKCLUB_IDS": "",
+    "REQUESTS_PER_MINUTE": "20",
+    "PROVIDERS_JSON": "[{\"id\":\"codex\",\"protocol\":\"codex\",\"models\":{\"codex\":\"gpt-5.6-terra\"}}]",
+    "OWNER_HACKCLUB_ID": "ident!R9zf0a"
+  },
+  "triggers": {
+    "crons": [
+      "17 3 * * *"
+    ]
+  },
+  "env": {
+    "production": {
+      "name": "ai-proxy",
+      "account_id": "2fa4104b17af8808577f12883fa657b1",
+      "workers_dev": true,
+      "preview_urls": false,
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "ai-proxy",
+          "database_id": "249e8df8-1be3-42c0-b796-1957efef37cb",
+          "migrations_dir": "migrations"
+        }
+      ],
+      "vars": {
+        "BETTER_AUTH_URL": "https://relay.raygen.dev",
+        "ALLOWED_HACKCLUB_IDS": "ident!R9zf0a",
+        "REQUESTS_PER_MINUTE": "20",
+        "PROVIDERS_JSON": "[{\"id\":\"codex\",\"protocol\":\"codex\",\"models\":{\"codex\":\"gpt-5.6-terra\"}}]",
+        "OWNER_HACKCLUB_ID": "ident!R9zf0a"
+      },
+      "routes": [
+        {
+          "pattern": "relay.raygen.dev",
+          "custom_domain": true
+        }
+      ]
+    }
+  }
+}

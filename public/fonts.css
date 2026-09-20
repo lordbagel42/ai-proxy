@@ -1,0 +1,4 @@
+/* Geist by Vercel, self-hosted under the SIL Open Font License in /fonts/OFL.txt. */
+@font-face{font-family:Geist;src:url('/fonts/geist-regular.woff2') format('woff2');font-weight:400;font-style:normal;font-display:swap}
+@font-face{font-family:Geist;src:url('/fonts/geist-semibold.woff2') format('woff2');font-weight:600;font-style:normal;font-display:swap}
+@font-face{font-family:'Geist Mono';src:url('/fonts/geist-mono.woff2') format('woff2');font-weight:400;font-style:normal;font-display:swap}

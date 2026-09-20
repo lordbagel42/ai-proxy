@@ -1,0 +1,14 @@
+BETTER_AUTH_SECRET=replace-with-at-least-32-random-characters
+HACKCLUB_CLIENT_ID=register-at-auth.hackclub.com
+HACKCLUB_CLIENT_SECRET=replace-me
+# Generate a separate 32-byte base64url encryption key for ChatGPT credentials.
+CODEX_TOKEN_KEY=replace-with-43-character-base64url-key
+OWNER_HACKCLUB_ID=ident!your-id
+# Add only the immutable Hack Club identity IDs of you and your friends.
+ALLOWED_HACKCLUB_IDS=ident!your-id,ident!friend-id
+
+# Optional direct providers. Use their binding names in PROVIDERS_JSON.
+# DEEPSEEK_API_KEY=
+# KIMI_API_KEY=
+# OPENAI_API_KEY=
+# ANTHROPIC_API_KEY=

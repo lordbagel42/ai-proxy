@@ -1,0 +1,34 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1789859546147,
+      "tag": "0000_unknown_nightmare",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1789875273383,
+      "tag": "0001_dear_black_bolt",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1789875986617,
+      "tag": "0002_bright_mephisto",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1789877261442,
+      "tag": "0003_illegal_vance_astro",
+      "breakpoints": true
+    }
+  ]
+}
