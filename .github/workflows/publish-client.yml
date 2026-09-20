@@ -1,0 +1,70 @@
+name: Publish CLI package
+
+on:
+  push:
+    tags: ["client-v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-client
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    env:
+      CI: "true"
+      WRANGLER_SEND_METRICS: "false"
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js and GitHub Packages
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22.23.2"
+          cache: npm
+          registry-url: https://npm.pkg.github.com
+          scope: "@lordbagel42"
+
+      - name: Validate release version
+        run: |
+          version="$(node -p "require('./bin/package.json').version")"
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            test "$GITHUB_REF_NAME" = "client-v$version"
+          fi
+
+      - name: Install development dependencies
+        run: npm ci
+
+      - name: Check types, tests, and builds
+        run: npm run check
+
+      - name: Pack, install, and test the CLI
+        run: npm run test:client:package -- --pack-destination "$RUNNER_TEMP/client-package"
+
+      - name: Publish the tested package
+        run: npm publish "$RUNNER_TEMP/client-package/"*.tgz
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify installation from GitHub Packages
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          version="$(node -p "require('./bin/package.json').version")"
+          package="@lordbagel42/ai-proxy@$version"
+          npm install --global --prefix "$RUNNER_TEMP/published-client" "$package" \
+            --registry=https://npm.pkg.github.com --ignore-scripts --no-audit --no-fund
+          "$RUNNER_TEMP/published-client/bin/ai-proxy" help
+          AI_PROXY_CLIENT_ENTRY="$RUNNER_TEMP/published-client/bin/ai-proxy" npm run test:client
+          printf 'Published and verified `%s` on GitHub Packages.\n' "$package" >> "$GITHUB_STEP_SUMMARY"

@@ -75,7 +75,7 @@ const overrides = Object.fromEntries(args.flatMap((value, index) => value === '-
 const catalog = JSON.parse(fs.readFileSync(overrides.model_catalog_json, 'utf8'));
 fs.writeFileSync(process.env.TEST_REPORT_PATH, JSON.stringify({ overrides, catalog, hasCredential: /^ap_[a-f0-9]{64}$/.test(process.env.AI_PROXY_API_KEY), mode: fs.statSync(overrides.model_catalog_json).mode & 511 }));
 `, { mode: 0o700 });
-    const child = spawn(process.execPath, [resolve('bin/ai-proxy.mjs'), 'codex', 'exec', '--model', 'account-fast', 'synthetic prompt'], {
+    const child = spawn(process.execPath, [process.env.AI_PROXY_CLIENT_ENTRY || resolve('bin/ai-proxy.mjs'), 'codex', 'exec', '--model', 'account-fast', 'synthetic prompt'], {
       env: { ...process.env, HOME: working, XDG_CONFIG_HOME: configHome, CODEX_HOME: codexHome, PATH: `${fakeBin}:${process.env.PATH}`, TEST_REPORT_PATH: reportPath },
       stdio: ['ignore', 'ignore', 'pipe'],
     });

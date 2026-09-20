@@ -20,6 +20,7 @@
     "db:migrate": "wrangler d1 migrations apply ai-proxy --local",
     "deploy": "wrangler deploy --env production",
     "test:client": "node --test test/client-models.test.mjs",
+    "test:client:package": "node tools/test-client-package.mjs",
     "test:docker": "node tools/test-docker.mjs",
     "build:server": "node tools/build-server.mjs",
     "start:server": "node dist-server/main.mjs",

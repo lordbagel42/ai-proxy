@@ -32,7 +32,7 @@ async function post(base, path, body) {
 async function credentials() {
   let saved;
   try { saved = JSON.parse(await readFile(credentialsPath, "utf8")); }
-  catch { throw new Error("Sign in first: npm run client -- login --url https://your-proxy.example"); }
+  catch { throw new Error("Sign in first: ai-proxy login --url https://your-proxy.example"); }
   if (typeof saved.key !== "string" || !/^ap_[a-f0-9]{64}$/.test(saved.key)) throw new Error("Invalid saved credential. Sign in again.");
   saved.url = serverUrl(saved.url);
   return saved;
@@ -64,7 +64,7 @@ try {
     const temp = `${credentialsPath}.${randomUUID()}.tmp`;
     await writeFile(temp, JSON.stringify({ url, key: result.key, keyId: result.key_id }) + "\n", { mode: 0o600, flag: "wx" });
     await rename(temp, credentialsPath); await chmod(credentialsPath, 0o600);
-    console.error("Signed in. Run: npm run client -- codex");
+    console.error("Signed in. Run: ai-proxy codex");
   } else if (command === "codex") {
     const saved = await credentials();
     const catalog = await fetchModelCatalog(saved);
@@ -99,8 +99,8 @@ try {
     await rm(credentialsPath);
     console.error("Signed out. The proxy key was revoked and removed from this machine.");
   } else {
-    console.log("Usage:\n  npm run client -- login --url https://your-proxy.example [--no-browser]\n  npm run client -- models\n  npm run client -- codex [--model MODEL] [Codex arguments]\n  npm run client -- token\n  npm run client -- logout");
-    if (command && command !== "help") process.exitCode = 1;
+    console.log("Usage:\n  ai-proxy login --url https://your-proxy.example [--no-browser]\n  ai-proxy models\n  ai-proxy codex [--model MODEL] [Codex arguments]\n  ai-proxy token\n  ai-proxy logout\n\nFrom a source checkout, replace ai-proxy with npm run client --.");
+    if (command && !["help", "--help", "-h"].includes(command)) process.exitCode = 1;
   }
 } catch (error) {
   console.error(error instanceof Error ? error.message : "Command failed.");

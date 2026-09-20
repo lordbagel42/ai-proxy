@@ -27,10 +27,10 @@ https://relay.raygen.dev/api/auth/callback/hackclub
 
 The black dashboard at [`/admin`](https://relay.raygen.dev/admin) includes usage analytics, a member leaderboard, invitations, member controls, and the shared ChatGPT connection.
 
-- **Invite someone:** create a single-use link, copy it, and send it yourself. Links expire after seven days. You can optionally restrict a link to one Hack Club identity. The full link is shown only when created; the database stores its hash.
+- **Invite people:** choose a single-use link, a custom limit of 2–500 new members, or a reusable link with unlimited uses. Copy the link and share it yourself. All links expire after seven days and can be restricted to one Hack Club identity. The dashboard shows used and remaining capacity; existing members and repeated acceptance do not spend extra uses. The full link is shown only when created; the database stores its hash.
 - **Join:** a friend opens the link, signs in with Hack Club, and accepts. They then create their own API keys or approve a terminal login. Signing in alone does not grant model access.
 - **Manage access:** suspend or restore a member, or permanently revoke all their keys. Suspension blocks subsequent API requests and dashboard access, including existing sessions and keys. Restoring access re-enables unexpired keys that were not revoked. Requests already running can finish.
-- **Cancel an invitation:** revoke it before acceptance. Used, expired, and revoked invitations cannot be redeemed again. Suspended members cannot bypass suspension with another invitation.
+- **Cancel an invitation:** revoke an open link to stop new joins, including after a reusable link has been used. Existing members keep their access. Exhausted, expired, and revoked links cannot admit new members. Suspended members cannot bypass suspension with another invitation.
 
 Invitations and membership changes take effect immediately without deployment. Ownership stays bound to `OWNER_HACKCLUB_ID`; members cannot invite others or promote themselves.
 
@@ -86,7 +86,16 @@ The application does not store prompts, generated text, or tool payloads. Better
 
 ## Native Codex for friends
 
-Install Node.js 22 or newer and the native `codex` CLI. From this project's directory:
+Install Node.js 22 or newer and the native `codex` CLI. The client is available as `@lordbagel42/ai-proxy` on [GitHub Packages](https://github.com/lordbagel42/ai-proxy/pkgs/npm/ai-proxy). Authenticate with your GitHub username and a personal access token (classic) with `read:packages` and access to the private package:
+
+```sh
+npm login --scope=@lordbagel42 --auth-type=legacy --registry=https://npm.pkg.github.com
+npm install --global @lordbagel42/ai-proxy --registry=https://npm.pkg.github.com
+ai-proxy login --url https://relay.raygen.dev
+ai-proxy codex
+```
+
+The package contains only the CLI and model helper, with no runtime npm dependencies. See [client installation and usage](bin/README.md). From a source checkout, the same commands remain available through `npm run client`:
 
 ```sh
 npm ci
@@ -104,6 +113,8 @@ npm run client -- logout
 ```
 
 Login stores the key in `~/.config/ai-proxy/credentials.json` (or under `XDG_CONFIG_HOME`) with mode `0600`. Logout revokes that key at the proxy and removes the local copy. CLI login codes expire in 10 minutes; approval and redemption are single-use.
+
+Client releases use the version in `bin/package.json`. The [Publish CLI package workflow](.github/workflows/publish-client.yml) runs the project checks, installs and tests the packed CLI, and publishes that tarball to GitHub's npm registry. Run it manually or push a `client-v<version>` tag matching the package version. Bump the client version before publishing another release.
 
 To configure Codex yourself, add this to your user-level Codex config and supply your proxy key through the environment:
 

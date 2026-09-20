@@ -1,0 +1,24 @@
+{
+  "name": "@lordbagel42/ai-proxy",
+  "version": "0.1.0",
+  "description": "Sign in to Friends AI Proxy and connect your native Codex CLI",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "ai-proxy": "./ai-proxy.mjs"
+  },
+  "files": [
+    "ai-proxy.mjs",
+    "codex-models.mjs"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lordbagel42/ai-proxy.git",
+    "directory": "bin"
+  },
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  }
+}
