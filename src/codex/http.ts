@@ -43,18 +43,33 @@ async function upstreamErrorCode(response: Response, signal: AbortSignal): Promi
   }
 }
 
-export async function codexRejection(response: Response, signal: AbortSignal, operation: "models" | "responses"): Promise<ApiError> {
-  const upstreamCode = await upstreamErrorCode(response, signal);
+function responseMetadata(response: Response) {
   const mediaType = response.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase();
   const contentType = !mediaType ? "missing" : ["application/json", "text/html", "text/plain", "text/event-stream"].includes(mediaType) ? mediaType : "other";
   const serverHeader = response.headers.get("server");
   const server = !serverHeader ? "missing" : serverHeader.toLowerCase() === "cloudflare" ? "cloudflare" : "other";
   const challenge = response.headers.get("cf-mitigated")?.toLowerCase() === "challenge";
   const ray = response.headers.get("cf-ray");
+  return { contentType, server, challenge, cfRay: ray && /^[a-f0-9]{16,32}-[A-Z]{3}$/.test(ray) ? ray : undefined };
+}
+
+/** Diagnose unexpected successful HTTP responses without reading provider content. */
+export function codexStreamRejection(response: Response): ApiError {
+  const { contentType, server, challenge, cfRay } = responseMetadata(response);
+  const encoding = response.headers.get("content-encoding")?.trim().toLowerCase();
+  const contentEncoding = !encoding ? "missing" : ["identity", "gzip", "deflate", "br", "zstd"].includes(encoding) ? encoding : "other";
+  console.warn(JSON.stringify({ code: "codex_upstream_unexpected_response", operation: "responses", upstreamStatus: response.status,
+    contentType, server, challenge, bodyPresent: response.body !== null, contentEncoding, ...(cfRay ? { cfRay } : {}) }));
+  return new ApiError(502, "Codex did not return an event stream.", "api_error");
+}
+
+export async function codexRejection(response: Response, signal: AbortSignal, operation: "models" | "responses"): Promise<ApiError> {
+  const upstreamCode = await upstreamErrorCode(response, signal);
+  const { contentType, server, challenge, cfRay } = responseMetadata(response);
   // Only categorical metadata, known error codes and a validated diagnostic ID
   // reach logs. Never log provider text, arbitrary headers, prompts or credentials.
   console.warn(JSON.stringify({ code: "codex_upstream_rejected", operation, upstreamStatus: response.status,
-    contentType, server, challenge, upstreamCode, ...(ray && /^[a-f0-9]{16,32}-[A-Z]{3}$/.test(ray) ? { cfRay: ray } : {}) }));
+    contentType, server, challenge, upstreamCode, ...(cfRay ? { cfRay } : {}) }));
   if (challenge) return new ApiError(502, "ChatGPT returned a browser challenge to the gateway.", "codex_upstream_challenge");
   if (response.status === 403 && upstreamCode === "unsupported_country_region_territory") {
     return new ApiError(502, "ChatGPT does not allow requests from this gateway's region.", "codex_upstream_region_restricted");

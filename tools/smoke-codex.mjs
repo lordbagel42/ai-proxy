@@ -78,7 +78,8 @@ const upstream = createServer(async (req, res) => {
     const block = useTool ? { type: 'tool_use', id: 'call_smoke', name: tool.name, input: {} } : { type: 'text', text: '' };
     const delta = useTool ? { type: 'input_json_delta', partial_json: JSON.stringify(input) } : { type: 'text_delta', text: 'proxy-smoke-ok' };
     toolReturned ||= useTool;
-    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    // The live Codex subscription endpoint can omit Content-Type on valid SSE.
+    res.writeHead(200, codexWorker ? {} : { 'content-type': 'text/event-stream' });
     const events = responses ? responseEvents(useTool, tool, input, calls) : [
       { type: 'message_start', message: { id: 'msg_mock', usage: { input_tokens: 10, output_tokens: 0 } } },
       { type: 'content_block_start', index: 0, content_block: block },

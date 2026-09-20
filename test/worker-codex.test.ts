@@ -66,7 +66,7 @@ function tokenFor(accountId: string, expiration = Math.floor(Date.now() / 1000) 
   ].map(value => Buffer.from(JSON.stringify(value)).toString("base64url")).join(".") + ".test-signature";
 }
 
-function responseFixture() {
+function responseFixture(contentType: string | null = "text/event-stream") {
   const id = "resp_worker_codex";
   const itemId = "msg_worker_codex";
   const part = { type: "output_text", text: "Hello from the Worker", annotations: [] };
@@ -82,8 +82,8 @@ function responseFixture() {
     { type: "response.output_item.done", output_index: 0, item },
     { type: "response.completed", response: { id, status: "completed", output: [item], usage: { input_tokens: 10, output_tokens: 5 } } },
   ];
-  return new Response(events.map((event, sequence_number) => sse({ ...event, sequence_number }, event.type)).join(""), {
-    headers: { "content-type": "text/event-stream" },
+  return new Response(new TextEncoder().encode(events.map((event, sequence_number) => sse({ ...event, sequence_number }, event.type)).join("")), {
+    headers: contentType === null ? {} : { "content-type": contentType },
   });
 }
 
@@ -477,6 +477,108 @@ describe("browser Codex OAuth", () => {
 });
 
 describe("direct Codex generation from the Worker", () => {
+  it.each([
+    ["messages", false], ["messages", true],
+    ["chat/completions", false], ["chat/completions", true],
+    ["responses", false], ["responses", true],
+  ] as const)("validates SSE without Content-Type through %s (stream=%s)", async (endpointName, stream) => {
+    const mocked = mockCodex({ generation: () => responseFixture(null) });
+    await connectCodex();
+    const input = endpointName === "responses" ? { input: "Hello" } : { messages: [{ role: "user", content: "Hello" }], max_tokens: 100 };
+    const response = await call(`/v1/${endpointName}`, {
+      method: "POST", headers: keyHeaders(), body: JSON.stringify({ model: "codex", stream, ...input }),
+    });
+    expect(response.status).toBe(200);
+    const body = await response.text();
+    expect(body).toContain("Hello from the Worker");
+    if (stream) {
+      expect(response.headers.get("content-type")).toContain("text/event-stream");
+      expect(body).toMatch(endpointName === "responses" ? /response.completed/ : endpointName === "messages" ? /message_stop/ : /\[DONE\]/);
+      expect(body).not.toMatch(/response.failed|"type":"error"/);
+    } else expect(JSON.parse(body).id).toBeTruthy();
+    expect(mocked.requests.filter(request => request.url === endpoint.responses)).toHaveLength(1);
+    expect(mocked.requests.filter(request => request.url === endpoint.token)).toHaveLength(1);
+    expect((await env.DB.prepare("SELECT count(*) AS count FROM codex_request").first<{ count: number }>())?.count).toBe(0);
+  });
+
+  it.each([
+    '{"error":"private upstream account detail"}',
+    '<html>private upstream account detail</html>',
+    'data: private malformed event\n\n',
+    sse({ type: "response.created", response: { id: "resp_incomplete", status: "in_progress" } }),
+    "",
+  ])("rejects malformed or incomplete bodies without Content-Type (%#)", async (body) => {
+    const logs = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const mocked = mockCodex({ generation: () => new Response(new TextEncoder().encode(body)) });
+    await connectCodex();
+    const response = await generate();
+    expect(response.status).toBe(502);
+    expect(await response.text()).not.toContain("private");
+    expect(JSON.stringify(logs.mock.calls)).not.toContain("private");
+    expect(mocked.requests.filter(request => request.url === endpoint.responses)).toHaveLength(1);
+    expect(mocked.requests.filter(request => request.url === endpoint.token)).toHaveLength(1);
+    expect((await env.DB.prepare("SELECT count(*) AS count FROM codex_request").first<{ count: number }>())?.count).toBe(0);
+  });
+
+  it.each(["messages", "chat/completions", "responses"])("reports headerless malformed SSE as a streaming failure through %s", async (endpointName) => {
+    mockCodex({ generation: () => new Response(new TextEncoder().encode(
+      sse({ type: "response.created", response: { id: "resp_bad_stream", status: "in_progress" } }) + 'data: private malformed event\n\n',
+    )) });
+    await connectCodex();
+    const ctx = createExecutionContext();
+    const input = endpointName === "responses" ? { input: "Hello" } : { messages: [{ role: "user", content: "Hello" }], max_tokens: 100 };
+    const response = await worker.fetch(new Request(`http://localhost:8787/v1/${endpointName}`, {
+      method: "POST", headers: keyHeaders(), body: JSON.stringify({ model: "codex", stream: true, ...input }),
+    }), appEnv, ctx);
+    const body = await response.text();
+    await waitOnExecutionContext(ctx);
+    expect(body).toMatch(endpointName === "responses" ? /response.failed/ : /"error":/);
+    expect(body).not.toMatch(/response.completed|message_stop|\[DONE\]|private/);
+    expect((await env.DB.prepare("SELECT count(*) AS count FROM codex_request").first<{ count: number }>())?.count).toBe(0);
+    expect(await env.DB.prepare("SELECT status FROM usage_event WHERE user_id = 'user-friend'").all()).toMatchObject({ results: [{ status: "error" }] });
+  });
+
+  it("accepts case-insensitive SSE media types with parameters", async () => {
+    mockCodex({ generation: () => responseFixture("Text/Event-Stream; charset=UTF-8") });
+    await connectCodex();
+    const response = await generate();
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain("Hello from the Worker");
+    expect((await env.DB.prepare("SELECT count(*) AS count FROM codex_request").first<{ count: number }>())?.count).toBe(0);
+  });
+
+  it.each([
+    [200, "application/json", "application/json", true],
+    [200, "text/html", "text/html", true],
+    [200, "application/private;text/event-stream", "other", true],
+    [200, "", "missing", true],
+    [204, "text/event-stream", "text/event-stream", false],
+  ] as const)("rejects non-SSE HTTP %s %s without refresh, retries or private diagnostics", async (status, mediaType, category, bodyPresent) => {
+    const logs = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const cancelled = vi.fn();
+    const body = bodyPresent ? new ReadableStream<Uint8Array>({
+      start(controller) { controller.enqueue(new TextEncoder().encode('{"error":"private upstream account detail"}')); },
+      cancel: cancelled,
+    }) : null;
+    const headers = new Headers({ server: "private-server", "cf-ray": "private-ray", "content-encoding": "private-encoding" });
+    headers.set("content-type", mediaType);
+    const mocked = mockCodex({ generation: () => new Response(body, { status, headers }) });
+    await connectCodex();
+    const response = await generate();
+    expect(response.status).toBe(502);
+    expect(await response.json()).toMatchObject({ error: { code: "api_error", message: "Codex did not return an event stream." } });
+    expect(logs).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(String(logs.mock.calls[0]?.[0]))).toMatchObject({
+      code: "codex_upstream_unexpected_response", operation: "responses", upstreamStatus: status, contentType: category, bodyPresent,
+    });
+    expect(JSON.stringify(logs.mock.calls)).not.toContain("private");
+    if (bodyPresent) expect(cancelled).toHaveBeenCalledOnce();
+    expect(mocked.requests.filter(request => request.url === endpoint.responses)).toHaveLength(1);
+    expect(mocked.requests.filter(request => request.url === endpoint.token)).toHaveLength(1);
+    expect((await env.DB.prepare("SELECT count(*) AS count FROM codex_request").first<{ count: number }>())?.count).toBe(0);
+    expect(await (await call("/api/admin/codex", { headers: browserHeaders() })).json()).toMatchObject({ connected: true, needsReconnect: false });
+  });
+
   it.each([
     ["/v1/messages", { model: "codex", max_tokens: 100, messages: [{ role: "user", content: "Hello" }] }, "message"],
     ["/v1/chat/completions", { model: "codex", messages: [{ role: "user", content: "Hello" }] }, "chat.completion"],

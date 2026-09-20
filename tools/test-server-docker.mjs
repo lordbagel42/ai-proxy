@@ -2,7 +2,7 @@
 // Tests the production container with synthetic identities and local mock providers only.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { createHash, randomBytes } from 'node:crypto';
+import { createCipheriv, createHash, randomBytes } from 'node:crypto';
 import { mkdtemp, mkdir, chmod, chown, writeFile, rm } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
@@ -21,6 +21,7 @@ const containers = new Set();
 let directory;
 let provider;
 let upstreamRequests = 0;
+let codexRequests = 0;
 let upstreamError;
 let stopping = false;
 
@@ -115,20 +116,34 @@ try {
   const key = `ap_${randomBytes(32).toString('hex')}`;
   const authSecret = randomBytes(32).toString('hex');
   const upstreamSecret = randomBytes(32).toString('hex');
+  const codexTokenKey = randomBytes(32);
+  const codexAccessToken = 'synthetic-docker-codex-access-token';
+  const codexAccountId = 'synthetic-docker-codex-account';
+  let sealedCodexCredentials;
   provider = createServer(async (request, response) => {
     try {
       assert.equal(request.method, 'POST');
-      assert.equal(request.headers.authorization, `Bearer ${upstreamSecret}`);
+      const codex = request.url === '/codex/responses';
+      assert.equal(request.headers.authorization, `Bearer ${codex ? codexAccessToken : upstreamSecret}`);
       assert.equal(request.headers.cookie, undefined);
       const chunks = [];
       for await (const chunk of request) chunks.push(chunk);
       const body = JSON.parse(Buffer.concat(chunks).toString());
       assert.equal(body.stream, true);
       const anthropic = request.url === '/anthropic/messages';
-      assert.ok(anthropic || request.url === '/responses/responses');
-      assert.equal(body.model, anthropic ? 'upstream-anthropic' : 'upstream-responses');
+      assert.ok(anthropic || codex || request.url === '/responses/responses');
+      assert.equal(body.model, anthropic ? 'upstream-anthropic' : codex ? 'upstream-codex' : 'upstream-responses');
+      if (codex) {
+        assert.equal(request.headers['chatgpt-account-id'], codexAccountId);
+        assert.equal(request.headers.originator, 'codex_cli_rs');
+        assert.equal(request.headers.accept, 'text/event-stream');
+        assert.equal(body.store, false);
+        assert.equal(body.max_output_tokens, undefined);
+        codexRequests++;
+      }
       upstreamRequests++;
-      response.writeHead(200, { 'content-type': 'text/event-stream' });
+      // Real Codex can return valid SSE with no Content-Type header.
+      response.writeHead(200, codex ? {} : { 'content-type': 'text/event-stream' });
       for (const event of anthropic ? anthropicFixture() : responsesFixture()) {
         response.write(event);
         await sleep(3);
@@ -141,6 +156,22 @@ try {
     }
   });
   const providerPort = await listen(provider);
+  const fixtureOrigin = `http://127.0.0.1:${providerPort}`;
+  const preloadFile = join(directory, 'provider-fixture.mjs');
+  await writeFile(preloadFile, `// Test-only fetch routing; never included in the production image.
+const nativeFetch = globalThis.fetch;
+const fixtureOrigin = ${JSON.stringify(fixtureOrigin)};
+const localProviders = new Set([fixtureOrigin + '/anthropic/messages', fixtureOrigin + '/responses/responses']);
+globalThis.fetch = (input, init) => {
+  const request = new Request(input, init);
+  if (request.url === 'https://chatgpt.com/backend-api/codex/responses') {
+    return nativeFetch(new Request(fixtureOrigin + '/codex/responses', request));
+  }
+  if (localProviders.has(request.url)) return nativeFetch(request);
+  throw new Error('Docker fixture rejected unexpected provider or OAuth request.');
+};
+`, { mode: 0o400 });
+  if (process.getuid?.() === 0) await chown(preloadFile, uid, gid);
   const reservation = createServer();
   const port = await listen(reservation);
   await new Promise(resolve => reservation.close(resolve));
@@ -149,9 +180,11 @@ try {
     HOST: '127.0.0.1', PORT: String(port),
     BETTER_AUTH_URL: origin, BETTER_AUTH_SECRET: authSecret, HACKCLUB_CLIENT_ID: 'synthetic-client', HACKCLUB_CLIENT_SECRET: 'synthetic-secret',
     OWNER_HACKCLUB_ID: 'ident!docker', ALLOWED_HACKCLUB_IDS: 'ident!docker', REQUESTS_PER_MINUTE: '100', FIXTURE_PROVIDER_KEY: upstreamSecret,
+    CODEX_TOKEN_KEY: codexTokenKey.toString('base64url'),
     PROVIDERS_JSON: JSON.stringify([
       { id: 'fixture-anthropic', protocol: 'anthropic', baseUrl: `http://127.0.0.1:${providerPort}/anthropic`, credential: 'FIXTURE_PROVIDER_KEY', models: { 'fixture-anthropic': 'upstream-anthropic' } },
       { id: 'fixture-responses', protocol: 'openai-responses', baseUrl: `http://127.0.0.1:${providerPort}/responses`, credential: 'FIXTURE_PROVIDER_KEY', models: { 'fixture-responses': 'upstream-responses' } },
+      { id: 'fixture-codex', protocol: 'codex', models: { 'fixture-codex': 'upstream-codex' } },
     ]),
   };
   const secretFile = join(directory, 'ai-proxy.env');
@@ -169,6 +202,15 @@ try {
     db.prepare('INSERT INTO session (id,expires_at,token,created_at,updated_at,user_id) VALUES (?,?,?,?,?,?)').run('docker-session', now + 3_600_000, 'synthetic-session-token', now, now, 'docker-user');
     db.prepare('INSERT INTO api_key (id,user_id,name,key_prefix,key_hash,created_at,expires_at) VALUES (?,?,?,?,?,?,?)')
       .run('docker-key', 'docker-user', 'Docker fixture', key.slice(0, 11), createHash('sha256').update(key).digest('hex'), now, now + 3_600_000);
+    const expiresAt = now + 3_600_000;
+    const tokens = { accessToken: codexAccessToken, refreshToken: 'synthetic-docker-unused-refresh-token', accountId: codexAccountId, expiresAt };
+    const nonce = randomBytes(12);
+    const cipher = createCipheriv('aes-256-gcm', codexTokenKey, nonce);
+    cipher.setAAD(Buffer.from('friends-ai-proxy:codex:v1:ident!docker:tokens'));
+    const encrypted = Buffer.concat([cipher.update(JSON.stringify(tokens), 'utf8'), cipher.final(), cipher.getAuthTag()]);
+    sealedCodexCredentials = `v1.${nonce.toString('base64url')}.${encrypted.toString('base64url')}`;
+    db.prepare('INSERT INTO codex_connection (id,owner_identity,credentials,expires_at,updated_at) VALUES (?,?,?,?,?)')
+      .run('codex', 'ident!docker', sealedCodexCredentials, expiresAt, now);
     db.exec('COMMIT; PRAGMA wal_checkpoint(TRUNCATE);');
   } finally { db.close(); }
   const cookie = (await serializeSignedCookie('better-auth.session_token', 'synthetic-session-token', authSecret)).split(';')[0];
@@ -179,7 +221,9 @@ try {
     containers.add(name);
     await run('docker', ['run', '--detach', '--name', name, '--network=host', ...safety,
       '--mount', `type=bind,source=${secretFile},target=/run/secrets/ai-proxy.env,readonly`,
-      '--env', 'SHUTDOWN_GRACE_MS=10000', '--env', `AI_PROXY_SERVING_ENABLED=${serving}`, image]);
+      '--mount', `type=bind,source=${preloadFile},target=/fixtures/provider-fixture.mjs,readonly`,
+      '--env', 'SHUTDOWN_GRACE_MS=10000', '--env', `AI_PROXY_SERVING_ENABLED=${serving}`, image,
+      'node', '--import', '/fixtures/provider-fixture.mjs', 'dist-server/main.mjs']);
     for (let attempt = 0; attempt < 100; attempt++) {
       const response = await fetchApp('/health').catch(() => null);
       if (response?.ok) {
@@ -216,10 +260,11 @@ try {
   assert.equal(session.status, 200);
   assert.equal((await session.json()).isOwner, true);
   const listing = await fetchApp('/v1/models', { headers: keyHeaders });
-  assert.deepEqual((await listing.json()).data.map(model => model.id), ['fixture-anthropic', 'fixture-responses']);
+  assert.deepEqual((await listing.json()).data.map(model => model.id), ['fixture-anthropic', 'fixture-responses', 'fixture-codex']);
   console.log('PASS production assets, Better Auth session, authorization and model listing.');
 
-  for (const model of ['fixture-anthropic', 'fixture-responses']) {
+  for (const model of ['fixture-anthropic', 'fixture-responses', 'fixture-codex']) {
+    if (model === 'fixture-codex') assert.equal(upstreamRequests, 12, 'preserve the original twelve generic provider cases');
     for (const endpoint of ['messages', 'chat/completions', 'responses']) {
       for (const stream of [false, true]) {
         const content = endpoint === 'responses' ? { input: 'Synthetic Docker integration prompt' }
@@ -238,26 +283,33 @@ try {
       }
     }
   }
-  assert.equal(upstreamRequests, 12);
+  assert.equal(upstreamRequests, 18);
+  assert.equal(codexRequests, 6, 'all protocols must handle real HTTP SSE without Content-Type');
   await stopContainer(active);
   const restarted = await start(true);
   const report = await fetchApp('/api/analytics?days=7', { headers: { cookie } });
   assert.equal(report.status, 200);
   const metrics = await report.json();
-  assert.equal(metrics.totals.requests, 12);
-  assert.equal(metrics.totals.successfulRequests, 12);
+  assert.equal(metrics.totals.requests, 18);
+  assert.equal(metrics.totals.successfulRequests, 18);
   assert.equal(metrics.totals.runningRequests, 0);
   assert.equal(metrics.totals.failedRequests, 0);
-  assert.equal(metrics.totals.totalTokens, 216);
+  assert.equal(metrics.totals.totalTokens, 312);
   assert.equal(metrics.leaderboard[0].name, 'Docker Friend');
-  assert.equal(metrics.leaderboard[0].totalTokens, 216);
+  assert.equal(metrics.leaderboard[0].totalTokens, 312);
   assert.equal(metrics.leaderboard[0].isYou, true);
   assert.equal((await fetchApp('/v1/models', { headers: keyHeaders })).status, 200);
   await stopContainer(restarted);
   const saved = new DatabaseSync(join(data, 'ai-proxy.sqlite'), { readOnly: true });
   try {
     assert.equal(saved.prepare('PRAGMA integrity_check').get().integrity_check, 'ok');
-    assert.equal(saved.prepare('SELECT count(*) AS count FROM usage_event').get().count, 12);
+    assert.equal(saved.prepare('SELECT count(*) AS count FROM usage_event').get().count, 18);
+    assert.equal(saved.prepare('SELECT count(*) AS count FROM codex_request').get().count, 0);
+    const connection = saved.prepare("SELECT credentials,version,lock_id,lock_expires_at FROM codex_connection WHERE id='codex'").get();
+    assert.equal(connection.credentials, sealedCodexCredentials, 'generation must not rotate the synthetic account credentials');
+    assert.equal(connection.version, 0);
+    assert.equal(connection.lock_id, null);
+    assert.equal(connection.lock_expires_at, 0);
     assert.equal(saved.prepare('PRAGMA foreign_key_check').all().length, 0);
   } finally { saved.close(); }
   console.log('PASS SIGTERM drain, restart, persisted keys/sessions/analytics and SQLite integrity.');

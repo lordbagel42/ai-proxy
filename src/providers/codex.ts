@@ -1,4 +1,4 @@
-import { CLIENT_USER_AGENT, codexRejection } from "../codex/http";
+import { CLIENT_USER_AGENT, codexRejection, codexStreamRejection } from "../codex/http";
 import { acquireCodexSlot, codexCredentials, markConnectionRejected } from "../codex/connection";
 import { ApiError } from "../core/errors";
 import type { Event, GenerationRequest, JsonObject } from "../core/types";
@@ -81,8 +81,13 @@ export function createCodexProvider(env: AppEnv, ctx: ExecutionContext): Provide
         }
         throw await codexRejection(response, signal, "responses");
       }
-      if (!response.body || !response.headers.get("content-type")?.includes("text/event-stream")) {
-        await response.body?.cancel(); throw new ApiError(502, "Codex did not return an event stream.", "api_error");
+      const contentType = response.headers.get("content-type");
+      const mediaType = contentType?.split(";")[0]?.trim().toLowerCase();
+      // Codex can omit Content-Type on a successful SSE response. Still reject
+      // explicit incompatible types, and validate every event and completion below.
+      if (!response.body || (contentType !== null && mediaType !== "text/event-stream")) {
+        const error = codexStreamRejection(response);
+        await response.body?.cancel(); throw error;
       }
       return releasing(responsesEvents(response.body), release, signal, ctx);
     } catch (error) {
