@@ -8,6 +8,7 @@ import { user } from "../src/db/schema";
 import { createDatabase, importDatabase, initializeDatabase, migrateDatabase, validateDatabase, type LocalDatabase } from "../server/sqlite";
 
 const directory = resolve("migrations");
+const migrationNames = readdirSync(directory).filter(name => name.endsWith(".sql")).sort();
 const databases: LocalDatabase[] = [];
 const temporaryDirectories: string[] = [];
 function database() { const db = createDatabase(":memory:"); databases.push(db); return db; }
@@ -99,7 +100,7 @@ describe("Node D1-compatible SQLite binding", () => {
 
   it("runs actual Drizzle D1 queries, returning, dates, boolean mapping and batch results", async () => {
     const local = database();
-    expect(migrateDatabase(local, directory)).toHaveLength(5);
+    expect(migrateDatabase(local, directory)).toHaveLength(migrationNames.length);
     expect(migrateDatabase(local, directory)).toEqual([]);
     validateDatabase(local, directory);
     const db = drizzle(local.asD1Database(), { schema: { user } });
@@ -116,6 +117,25 @@ describe("Node D1-compatible SQLite binding", () => {
 });
 
 describe("database lifecycle and import", () => {
+  it("preserves spent single-use invitations when migrating to reusable invitations", async () => {
+    const previous = temporary();
+    for (const name of migrationNames.filter(name => name < "0005_")) copyFileSync(join(directory, name), join(previous, name));
+    const db = database();
+    migrateDatabase(db, previous);
+    for (const [id, redeemedAt, revokedAt] of [["open", null, null], ["spent", 123, null], ["revoked", null, 456]] as const) {
+      await db.prepare(`INSERT INTO proxy_invite (id, token_hash, label, created_at, expires_at, created_by, redeemed_at, revoked_at)
+        VALUES (?, ?, ?, 1, 9999999999999, 'owner', ?, ?)`).bind(id, id, id, redeemedAt, revokedAt).run();
+    }
+    expect(migrateDatabase(db, directory)).toEqual(["0005_invite-use-limits.sql"]);
+    expect((await db.prepare("SELECT id, max_uses, use_count, redeemed_at, revoked_at FROM proxy_invite ORDER BY id").all()).results).toEqual([
+      { id: "open", max_uses: 1, use_count: 0, redeemed_at: null, revoked_at: null },
+      { id: "revoked", max_uses: 1, use_count: 0, redeemed_at: null, revoked_at: 456 },
+      { id: "spent", max_uses: 1, use_count: 1, redeemed_at: 123, revoked_at: null },
+    ]);
+    expect(migrateDatabase(db, directory)).toEqual([]);
+    validateDatabase(db, directory);
+  });
+
   it("requires explicit initialization, persists writes and validates a read-only database", async () => {
     const path = join(temporary(), "db.sqlite");
     expect(() => createDatabase(path)).toThrow("does not exist");
@@ -145,7 +165,7 @@ describe("database lifecycle and import", () => {
     expect(await db.prepare("SELECT access_token FROM account").first("access_token")).toBe("opaque-auth-token");
     expect(await db.prepare("SELECT name FROM user").first("name")).toBe("O'Connor;\nnext line");
     expect(await db.prepare("SELECT name FROM sqlite_schema WHERE name='_cf_KV'").first()).toBeNull();
-    expect(await db.prepare("SELECT count(*) AS count FROM d1_migrations").first("count")).toBe(5);
+    expect(await db.prepare("SELECT count(*) AS count FROM d1_migrations").first("count")).toBe(migrationNames.length);
     if (ledger) expect(await db.prepare("SELECT applied_at FROM d1_migrations LIMIT 1").first("applied_at")).toBe("2026-09-19 00:00:00");
     expect(() => importDatabase(source, path, directory)).toThrow("refusing to overwrite");
     expect(readdirSync(dir).some((name) => name.includes(".import-"))).toBe(false);
@@ -171,10 +191,10 @@ describe("database lifecycle and import", () => {
     await db.prepare("INSERT INTO proxy_member (identity_id,created_at,updated_at) VALUES ('owner',1,1)").run();
     const dir = temporary();
     for (const name of readdirSync(directory).filter((name) => name.endsWith(".sql"))) copyFileSync(join(directory, name), join(dir, name));
-    writeFileSync(join(dir, "0005_broken.sql"), "ALTER TABLE proxy_member ADD COLUMN scratch TEXT; DELETE FROM proxy_member; INSERT INTO absent VALUES (1);");
+    writeFileSync(join(dir, "9999_broken.sql"), "ALTER TABLE proxy_member ADD COLUMN scratch TEXT; DELETE FROM proxy_member; INSERT INTO absent VALUES (1);");
     expect(() => migrateDatabase(db, dir)).toThrow();
     expect(await db.prepare("SELECT identity_id FROM proxy_member").first("identity_id")).toBe("owner");
-    expect(await db.prepare("SELECT count(*) AS count FROM d1_migrations").first("count")).toBe(5);
+    expect(await db.prepare("SELECT count(*) AS count FROM d1_migrations").first("count")).toBe(migrationNames.length);
     expect((await db.prepare("PRAGMA table_info(proxy_member)").all<{ name: string }>()).results.some((row) => row.name === "scratch")).toBe(false);
     validateDatabase(db, directory);
   });
@@ -182,9 +202,9 @@ describe("database lifecycle and import", () => {
   it("rejects missing migration entries or schema drift before the server can listen", () => {
     const db = database();
     migrateDatabase(db, directory);
-    db.sqlite.exec("DELETE FROM d1_migrations WHERE name LIKE '0004_%'");
+    db.sqlite.prepare("DELETE FROM d1_migrations WHERE name = ?").run(migrationNames.at(-1)!);
     expect(() => validateDatabase(db, directory)).toThrow("pending migrations");
-    db.sqlite.prepare("INSERT INTO d1_migrations (name) VALUES (?)").run("0004_fearless_carmella_unuscione.sql");
+    db.sqlite.prepare("INSERT INTO d1_migrations (name) VALUES (?)").run(migrationNames.at(-1)!);
     db.sqlite.exec("DROP INDEX usage_event_user_started; CREATE INDEX usage_event_user_started ON usage_event (started_at)");
     expect(() => validateDatabase(db, directory)).toThrow("index mismatch");
   });

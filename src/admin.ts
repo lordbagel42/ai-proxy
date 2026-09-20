@@ -5,12 +5,17 @@ import type { AppEnv } from "./env";
 import { capacityCondition, environmentMembers, identityForUser, MAX_MEMBERS, membershipForIdentity, type MemberRow } from "./membership";
 
 const identitySchema = z.string().trim().regex(/^ident![A-Za-z0-9_-]{1,128}$/);
-const inviteInput = z.object({ label: z.string().trim().min(1).max(120), targetIdentity: identitySchema.optional() }).strict();
+const inviteInput = z.object({
+  label: z.string().trim().min(1).max(120), targetIdentity: identitySchema.optional(),
+  maxUses: z.number().int().min(1).max(MAX_MEMBERS).nullable().default(1),
+}).strict();
 const memberInput = z.object({ status: z.enum(["active", "suspended"]).optional(), label: z.string().trim().max(120).optional() }).strict();
-const inviteColumns = "id, label, target_identity, created_at, expires_at, redeemed_identity, redeemed_at, revoked_at";
+const inviteColumns = "id, label, target_identity, created_at, expires_at, redeemed_identity, redeemed_at, revoked_at, max_uses, use_count";
+const availableInvite = "revoked_at IS NULL AND expires_at > ? AND (max_uses IS NULL OR use_count < max_uses)";
 interface InviteRow {
   id: string; label: string; target_identity: string | null;
   created_at: number; expires_at: number; redeemed_identity: string | null; redeemed_at: number | null; revoked_at: number | null;
+  max_uses: number | null; use_count: number;
 }
 interface UserStats {
   identity_id: string; user_id: string; name: string; email: string; joined_at: number;
@@ -27,8 +32,12 @@ function inviteView(row: InviteRow) {
   return {
     id: row.id, label: row.label, targetIdentity: row.target_identity,
     createdAt: row.created_at, expiresAt: row.expires_at,
-    status: row.redeemed_at !== null ? "accepted" as const : row.revoked_at !== null ? "revoked" as const : row.expires_at <= Date.now() ? "expired" as const : "pending" as const,
+    status: row.revoked_at !== null ? "revoked" as const
+      : row.max_uses !== null && row.use_count >= row.max_uses ? (row.max_uses === 1 ? "accepted" as const : "exhausted" as const)
+      : row.expires_at <= Date.now() ? "expired" as const : "pending" as const,
     acceptedBy: row.redeemed_identity,
+    maxUses: row.max_uses, useCount: row.use_count,
+    remainingUses: row.max_uses === null ? null : Math.max(0, row.max_uses - row.use_count),
   };
 }
 
@@ -67,7 +76,7 @@ export async function listMembers(env: AppEnv) {
 export async function listInvites(env: AppEnv) {
   // Keep pending invitations visible first while bounding historical metadata.
   const result = await env.DB.prepare(`SELECT ${inviteColumns} FROM proxy_invite ORDER BY
-    CASE WHEN redeemed_at IS NULL AND revoked_at IS NULL AND expires_at > ? THEN 0 ELSE 1 END, created_at DESC LIMIT 500`)
+    CASE WHEN ${availableInvite} THEN 0 ELSE 1 END, created_at DESC LIMIT 500`)
     .bind(Date.now()).all<InviteRow>();
   return result.results.map(inviteView);
 }
@@ -91,23 +100,24 @@ export async function createInvite(env: AppEnv, ownerUserId: string, body: Recor
     throw new ApiError(403, "Only the proxy owner can invite members.", "permission_error");
   }
   const parsed = inviteInput.safeParse(body);
-  if (!parsed.success) invalid("Provide an invitation label and an optional Hack Club identity.");
+  if (!parsed.success) invalid(`Provide an invitation label, an optional Hack Club identity, and a use limit from 1 to ${MAX_MEMBERS} (or null for unlimited uses).`);
   const input = parsed.data;
   const token = randomToken("inv_"); const now = Date.now(); const id = crypto.randomUUID();
   const row: InviteRow = {
     id, label: input.label, target_identity: input.targetIdentity ?? null,
     created_at: now, expires_at: now + 7 * 86_400_000, redeemed_identity: null, redeemed_at: null, revoked_at: null,
+    max_uses: input.maxUses, use_count: 0,
   };
-  const result = await env.DB.prepare(`INSERT INTO proxy_invite (id, token_hash, label, target_identity, created_at, expires_at, created_by)
-    SELECT ?, ?, ?, ?, ?, ?, ? WHERE (SELECT count(*) FROM proxy_invite WHERE redeemed_at IS NULL AND revoked_at IS NULL AND expires_at > ?) < 500`)
-    .bind(id, await digest(token), row.label, row.target_identity, now, row.expires_at, ownerUserId, now).run();
+  const result = await env.DB.prepare(`INSERT INTO proxy_invite (id, token_hash, label, target_identity, created_at, expires_at, created_by, max_uses)
+    SELECT ?, ?, ?, ?, ?, ?, ?, ? WHERE (SELECT count(*) FROM proxy_invite WHERE ${availableInvite}) < 500`)
+    .bind(id, await digest(token), row.label, row.target_identity, now, row.expires_at, ownerUserId, input.maxUses, now).run();
   if (!result.meta.changes) invalid("Revoke an unused invitation before creating more.");
   return { invite: inviteView(row), url: new URL(`/invite#${token}`, env.BETTER_AUTH_URL).toString() };
 }
 
 export async function revokeInvite(env: AppEnv, id: string): Promise<void> {
   if (!z.uuid().safeParse(id).success) invalid("Invalid invitation ID.");
-  await env.DB.prepare("UPDATE proxy_invite SET revoked_at = ? WHERE id = ? AND redeemed_at IS NULL AND revoked_at IS NULL")
+  await env.DB.prepare("UPDATE proxy_invite SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL")
     .bind(Date.now(), id).run();
 }
 
@@ -149,24 +159,28 @@ export async function acceptInvite(env: AppEnv, userId: string, token: string): 
   const tokenHash = await digest(token);
   const invite = await env.DB.prepare(`SELECT ${inviteColumns} FROM proxy_invite WHERE token_hash = ?`).bind(tokenHash).first<InviteRow>();
   const now = Date.now();
-  if (!invite || invite.redeemed_at !== null || invite.revoked_at !== null || invite.expires_at <= now) invalid("This invitation is invalid or no longer available.");
+  if (!invite || invite.revoked_at !== null || invite.expires_at <= now) invalid("This invitation is invalid or no longer available.");
   if (invite.target_identity !== null && invite.target_identity !== identityId) throw new ApiError(403, "This invitation is for a different Hack Club identity.", "permission_error");
+  // Existing members and retries never spend an invitation's remaining uses.
+  if (member.status === "active") return;
+  if (invite.max_uses !== null && invite.use_count >= invite.max_uses) invalid("This invitation has reached its use limit.");
   const capacity = capacityCondition(env, identityId);
   const redemption = crypto.randomUUID();
-  // D1 batch is transactional. The one-time marker ties membership creation to
-  // this exact successful redemption; another request cannot reuse its result.
+  // The transactional batch atomically reserves a use and creates membership.
+  // Rechecking membership in the UPDATE prevents concurrent retries from spending
+  // extra uses. The unique marker ties the INSERT to this successful reservation.
   const results = await env.DB.batch([
-    env.DB.prepare(`UPDATE proxy_invite SET redeemed_identity = ?, redeemed_at = ?, redemption_id = ?
-      WHERE token_hash = ? AND redeemed_at IS NULL AND revoked_at IS NULL AND expires_at > ?
+    env.DB.prepare(`UPDATE proxy_invite SET use_count = use_count + 1, redeemed_identity = ?, redeemed_at = ?, redemption_id = ?
+      WHERE token_hash = ? AND ${availableInvite}
       AND (target_identity IS NULL OR target_identity = ?)
-      AND (? = ? OR NOT EXISTS (SELECT 1 FROM proxy_member WHERE identity_id = ? AND status = 'suspended'))
+      AND NOT EXISTS (SELECT 1 FROM proxy_member WHERE identity_id = ?)
       AND ${capacity.sql}`)
-      .bind(identityId, now, redemption, tokenHash, now, identityId, identityId, env.OWNER_HACKCLUB_ID ?? "", identityId, ...capacity.bindings),
+      .bind(identityId, now, redemption, tokenHash, now, identityId, identityId, ...capacity.bindings),
     env.DB.prepare(`INSERT INTO proxy_member (identity_id, status, label, created_at, updated_at)
-      SELECT ?, 'active', label, ?, ? FROM proxy_invite WHERE redemption_id = ? AND token_hash = ?
-      ON CONFLICT(identity_id) DO UPDATE SET status = 'active', updated_at = excluded.updated_at
-      WHERE proxy_member.status <> 'suspended' OR proxy_member.identity_id = ?`)
-      .bind(identityId, now, now, redemption, tokenHash, env.OWNER_HACKCLUB_ID ?? ""),
+      SELECT ?, 'active', label, ?, ? FROM proxy_invite WHERE redemption_id = ? AND token_hash = ?`)
+      .bind(identityId, now, now, redemption, tokenHash),
   ]);
-  if (!results[0]?.meta.changes || !results[1]?.meta.changes) invalid("This invitation is no longer available or the proxy has reached its member limit.");
+  if (results[0]?.meta.changes && results[1]?.meta.changes) return;
+  if ((await membershipForIdentity(env, identityId)).status === "active") return;
+  invalid("This invitation is no longer available or the proxy has reached its member limit.");
 }

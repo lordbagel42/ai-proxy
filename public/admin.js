@@ -76,25 +76,39 @@ function renderMembers() {
   $('members-result-count').textContent = `${number.format(members.length)} of ${number.format(state.data.members.length)} members`;
 }
 function inviteStatus(invite) { return invite.status === 'pending' && invite.expiresAt <= Date.now() ? 'expired' : invite.status; }
+function inviteUses(invite) {
+  return invite.maxUses === null ? `${number.format(invite.useCount)} used · unlimited`
+    : `${number.format(invite.useCount)} / ${number.format(invite.maxUses)} used`;
+}
+function updateInviteLimit() {
+  const mode = $('invite-use-mode').value;
+  $('invite-use-limit-field').hidden = mode !== 'limited';
+  $('invite-use-limit').disabled = mode !== 'limited';
+  $('invite-use-note').textContent = mode === 'unlimited'
+    ? 'Reusable for 7 days. Anyone with the link can join until you revoke it.'
+    : mode === 'limited' ? 'Valid for 7 days, up to your use limit. Each new member counts once.'
+      : 'One use. Valid for 7 days. Share it with the person you want to invite.';
+}
 function renderInvites() {
   const invites = state.data.invites.filter((invite) => state.inviteFilter === 'pending' ? inviteStatus(invite) === 'pending' : inviteStatus(invite) !== 'pending');
   $('invites-table').replaceChildren();
   for (const invite of [...invites].sort((a, b) => b.createdAt - a.createdAt)) {
     const row = node('tr'); const label = node('td');
     label.append(node('strong', 'invite-label', invite.label));
-    if (invite.acceptedBy) label.append(node('small', 'invite-meta', `Accepted by ${invite.acceptedBy}`));
+    if (invite.maxUses === 1 && invite.acceptedBy) label.append(node('small', 'invite-meta', `Accepted by ${invite.acceptedBy}`));
     else if (invite.targetIdentity) label.append(node('small', 'invite-meta', `For ${invite.targetIdentity}`));
     else label.append(node('small', 'invite-meta', 'Anyone with this private link'));
     const status = node('td'); const current = inviteStatus(invite); status.append(badge(current === 'pending' ? 'active' : current)); if (current === 'pending') status.firstChild.textContent = 'Open';
+    const uses = node('td', 'usage-cell', inviteUses(invite));
     const created = node('td', 'date-cell', date(invite.createdAt)); created.title = new Date(invite.createdAt).toLocaleString();
     const expiry = node('td', 'date-cell', date(invite.expiresAt)); expiry.title = new Date(invite.expiresAt).toLocaleString();
     const actions = node('td');
     if (current === 'pending') { const revoke = node('button', 'text-link danger', 'Revoke'); revoke.dataset.inviteId = invite.id; revoke.setAttribute('aria-label', `Revoke ${invite.label}`); actions.append(revoke); }
-    row.append(label, status, created, expiry, actions); $('invites-table').append(row);
+    row.append(label, status, uses, created, expiry, actions); $('invites-table').append(row);
   }
   $('invites-empty').hidden = invites.length > 0;
   $('invites-empty-title').textContent = state.inviteFilter === 'pending' ? 'There’s room for one more.' : 'A fresh start.';
-  $('invites-empty-description').textContent = state.inviteFilter === 'pending' ? 'Create a link and share it with someone you’d like to invite.' : 'Accepted, expired, and revoked invitations will appear here.';
+  $('invites-empty-description').textContent = state.inviteFilter === 'pending' ? 'Create a link and share it with people you’d like to invite.' : 'Accepted, exhausted, expired, and revoked invitations will appear here.';
   $('invites-empty').querySelector('button').hidden = state.inviteFilter !== 'pending';
   $('invites-result-count').textContent = `${number.format(invites.length)} ${state.inviteFilter === 'pending' ? 'open' : 'past'} invitation${invites.length === 1 ? '' : 's'}`;
 }
@@ -159,6 +173,7 @@ async function load() {
 function openInvite() {
   if (state.busyInvite) return;
   $('invite-form').reset(); $('invite-form').hidden = false; $('invite-result').hidden = true;
+  updateInviteLimit();
   $('invite-link').value = ''; $('invite-dialog').querySelector('details').open = false; message('invite-error', '');
   $('invite-dialog').showModal(); $('invite-label').focus();
 }
@@ -268,17 +283,22 @@ $('invites-table').addEventListener('click', (event) => {
     await api(`/api/admin/invites/${encodeURIComponent(invite.id)}`, 'DELETE'); await refreshAfterChange('Invitation revoked.');
   });
 });
+$('invite-use-mode').addEventListener('change', updateInviteLimit);
 $('invite-form').addEventListener('submit', async (event) => {
   event.preventDefault(); if (state.busyInvite) return;
   state.busyInvite = true; const button = $('create-invite-submit'); button.disabled = true; message('invite-error', '');
   for (const close of document.querySelectorAll('[data-close-dialog="invite-dialog"]')) close.disabled = true;
   try {
-    const body = { label: $('invite-label').value.trim() };
+    const mode = $('invite-use-mode').value;
+    const body = {
+      label: $('invite-label').value.trim(),
+      maxUses: mode === 'unlimited' ? null : mode === 'limited' ? Number($('invite-use-limit').value) : 1,
+    };
     if ($('invite-identity').value.trim()) body.targetIdentity = $('invite-identity').value.trim();
     const result = await api('/api/admin/invites', 'POST', body);
     const url = new URL(result.url); if (url.origin !== location.origin || url.pathname !== '/invite') throw new Error('The server returned an unexpected invitation link.');
     $('invite-form').hidden = true; $('invite-result').hidden = false; $('invite-link').value = url.href;
-    $('invite-expiry').textContent = `Expires ${new Date(result.invite.expiresAt).toLocaleString()} · one use`;
+    $('invite-expiry').textContent = `Expires ${new Date(result.invite.expiresAt).toLocaleString()} · ${inviteUses(result.invite)}`;
     $('copy-invite').focus(); await refreshAfterChange('Invitation created. Copy its private link before closing.');
   } catch (error) { message('invite-error', error.message, true); }
   finally {

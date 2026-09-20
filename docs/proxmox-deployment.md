@@ -70,6 +70,8 @@ The importer refuses an existing database or WAL/SHM journal, loads into a priva
 
 For later upgrades, stop the application, make a consistent backup, run `db-cli migrate`, then start the new image. SQLite uses WAL, foreign keys, and FULL synchronous mode. Copying only the main `.sqlite` file while it is running is not a backup: stop/checkpoint first, or use SQLite's online backup facilities.
 
+The reusable-invitation update includes `0005_invite-use-limits.sql`. Apply it before running the updated server. Existing invites retain their single-use limit, and already accepted invitations remain spent.
+
 ## Candidate, freeze, and cutover
 
 1. Recover the exact existing secrets into restricted storage. Export D1 into a restricted directory and retain a rollback copy. The homelab deployment session owns this transfer and routing.

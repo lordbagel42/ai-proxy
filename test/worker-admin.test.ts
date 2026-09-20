@@ -16,7 +16,7 @@ const appEnv: AppEnv = {
   RELAY_SHARED_SECRET: "test-upstream-secret", REQUESTS_PER_MINUTE: "20",
   PROVIDERS_JSON: JSON.stringify([{ id: "claude", protocol: "anthropic", baseUrl: "https://relay.test/v1", credential: "RELAY_SHARED_SECRET", models: { claude: "upstream-claude" } }]),
 };
-type Role = "owner" | "friend" | "newcomer" | "other";
+type Role = "owner" | "friend" | "newcomer" | "other" | "extra";
 const cookies = {} as Record<Role, string>;
 let ownerKey: string;
 let friendKey: string;
@@ -31,7 +31,7 @@ beforeEach(async () => {
     env.DB.prepare("DELETE FROM cli_login"), env.DB.prepare("DELETE FROM rate_limit"), env.DB.prepare("DELETE FROM verification"),
   ]);
   const now = Date.now();
-  for (const role of ["owner", "friend", "newcomer", "other"] as const) {
+  for (const role of ["owner", "friend", "newcomer", "other", "extra"] as const) {
     await env.DB.prepare('INSERT INTO "user" (id, name, email, email_verified, created_at, updated_at) VALUES (?, ?, ?, 0, ?, ?)')
       .bind(`user-${role}`, `Test ${role}`, `${role}@example.com`, now, now).run();
     await env.DB.prepare("INSERT INTO account (id, account_id, provider_id, user_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)")
@@ -55,7 +55,7 @@ const keyHeaders = (key = friendKey) => ({ authorization: `Bearer ${key}`, "cont
 const jsonRequest = (method: string, body: unknown, role: Role = "owner") => ({ method, headers: browserHeaders(role), body: JSON.stringify(body) });
 const patchMember = (identityId: string, body: unknown) => call(`/api/admin/members/${encodeURIComponent(identityId)}`, jsonRequest("PATCH", body));
 
-interface Invite { id: string; label: string; targetIdentity: string | null; createdAt: number; expiresAt: number; status: string; acceptedBy: string | null }
+interface Invite { id: string; label: string; targetIdentity: string | null; createdAt: number; expiresAt: number; status: string; acceptedBy: string | null; maxUses: number | null; useCount: number; remainingUses: number | null }
 interface Member { identityId: string; userId: string | null; name: string | null; email: string | null; status: string; isOwner: boolean; label: string; requestsToday: number; activeKeys: number }
 interface Overview { summary: { activeMembers: number; suspendedMembers: number; pendingInvites: number; requestsToday: number; activeKeys: number }; members: Member[]; invites: Invite[]; defaults: { minuteLimit: number } }
 async function createInvite(body: Record<string, unknown> = { label: "A friend" }) {
@@ -145,7 +145,7 @@ describe("membership invitations", () => {
   it("creates a seven-day invite whose secret is hashed and only returned in the URL fragment", async () => {
     const before = Date.now();
     const created = await createInvite({ label: "Laptop club", targetIdentity: "ident!newcomer" });
-    expect(created.invite).toMatchObject({ label: "Laptop club", targetIdentity: "ident!newcomer", status: "pending" });
+    expect(created.invite).toMatchObject({ label: "Laptop club", targetIdentity: "ident!newcomer", status: "pending", maxUses: 1, useCount: 0, remainingUses: 1 });
     expect(created.invite).not.toHaveProperty("dailyLimit");
     expect(created.invite.expiresAt).toBeGreaterThanOrEqual(before + 7 * 86_400_000);
     expect(created.invite.expiresAt).toBeLessThanOrEqual(Date.now() + 7 * 86_400_000);
@@ -190,6 +190,67 @@ describe("membership invitations", () => {
     expect((await acceptInvite(invite.token, "other")).status).toBe(403);
     expect((await overview()).invites.find(item => item.id === invite.invite.id)?.status).toBe("pending");
     expect((await acceptInvite(invite.token, "newcomer")).status).toBe(200);
+  });
+
+  it("enforces a custom use limit across concurrent new members", async () => {
+    const invite = await createInvite({ label: "Two places", maxUses: 2 });
+    const results = await Promise.all([acceptInvite(invite.token, "newcomer"), acceptInvite(invite.token, "other"), acceptInvite(invite.token, "extra")]);
+    expect(results.map(result => result.status).sort()).toEqual([200, 200, 400]);
+    expect((await overview()).invites.find(item => item.id === invite.invite.id))
+      .toMatchObject({ maxUses: 2, useCount: 2, remainingUses: 0, status: "exhausted" });
+    expect((await env.DB.prepare("SELECT identity_id FROM proxy_member").all()).results).toHaveLength(2);
+  });
+
+  it("keeps an unlimited invitation open after use and allows revocation", async () => {
+    const invite = await createInvite({ label: "Everyone in the club", maxUses: null });
+    expect((await acceptInvite(invite.token, "newcomer")).status).toBe(200);
+    expect((await acceptInvite(invite.token, "other")).status).toBe(200);
+    expect((await overview()).invites.find(item => item.id === invite.invite.id))
+      .toMatchObject({ maxUses: null, useCount: 2, remainingUses: null, status: "pending" });
+    expect((await overview()).summary.pendingInvites).toBe(1);
+    expect((await call(`/api/admin/invites/${invite.invite.id}`, { method: "DELETE", headers: browserHeaders() })).status).toBe(204);
+    expect((await acceptInvite(invite.token, "extra")).status).toBe(400);
+    expect((await overview()).invites.find(item => item.id === invite.invite.id)).toMatchObject({ status: "revoked", useCount: 2 });
+    expect((await call("/api/me", { headers: browserHeaders("newcomer") })).status).toBe(200);
+  });
+
+  it("does not spend extra uses on existing members or concurrent retries", async () => {
+    const invite = await createInvite({ label: "Two new friends", maxUses: 2 });
+    expect((await acceptInvite(invite.token, "friend")).status).toBe(200);
+    expect((await overview()).invites.find(item => item.id === invite.invite.id)?.useCount).toBe(0);
+    const results = await Promise.all([acceptInvite(invite.token), acceptInvite(invite.token)]);
+    expect(results.map(result => result.status)).toEqual([200, 200]);
+    expect((await acceptInvite(invite.token)).status).toBe(200);
+    expect((await overview()).invites.find(item => item.id === invite.invite.id))
+      .toMatchObject({ useCount: 1, remainingUses: 1, status: "pending" });
+    expect((await acceptInvite(invite.token, "other")).status).toBe(200);
+    expect((await overview()).invites.find(item => item.id === invite.invite.id)?.useCount).toBe(2);
+  });
+
+  it("still enforces expiry, target identity, and suspension on reusable invitations", async () => {
+    const targeted = await createInvite({ label: "Restricted reusable", maxUses: null, targetIdentity: "ident!newcomer" });
+    expect((await acceptInvite(targeted.token, "other")).status).toBe(403);
+    expect((await acceptInvite(targeted.token)).status).toBe(200);
+    expect((await patchMember("ident!newcomer", { status: "suspended" })).status).toBe(204);
+    expect((await acceptInvite(targeted.token)).status).toBe(403);
+    expect((await overview()).invites.find(item => item.id === targeted.invite.id)?.useCount).toBe(1);
+    const expiring = await createInvite({ label: "Expired reusable", maxUses: null });
+    expect((await acceptInvite(expiring.token, "other")).status).toBe(200);
+    await env.DB.prepare("UPDATE proxy_invite SET expires_at = ? WHERE id = ?").bind(Date.now() - 1, expiring.invite.id).run();
+    expect((await acceptInvite(expiring.token, "extra")).status).toBe(400);
+    expect((await overview()).invites.find(item => item.id === expiring.invite.id)).toMatchObject({ status: "expired", useCount: 1 });
+  });
+
+  it("does not consume a use when the circle is full", async () => {
+    const invite = await createInvite({ label: "Full circle", maxUses: 3 });
+    await env.DB.prepare(`WITH RECURSIVE members(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM members WHERE n < 498)
+      INSERT INTO proxy_member (identity_id, created_at, updated_at) SELECT 'ident!filled-' || n, 1, 1 FROM members`).run();
+    expect((await acceptInvite(invite.token)).status).toBe(400);
+    expect(await env.DB.prepare("SELECT use_count FROM proxy_invite WHERE id = ?").bind(invite.invite.id).first()).toEqual({ use_count: 0 });
+  });
+
+  it.each([0, -1, 1.5, 501, "2", true])("rejects an invalid invitation use limit: %s", async maxUses => {
+    expect((await call("/api/admin/invites", jsonRequest("POST", { label: "Invalid limit", maxUses }))).status).toBe(400);
   });
 
   it("rejects expired and revoked invitations", async () => {

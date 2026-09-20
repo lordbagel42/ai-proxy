@@ -63,6 +63,20 @@ afterEach(async () => {
 });
 
 describe("Application with Node SQLite", () => {
+  it("rolls back a reusable invite's use count when creating membership fails", async () => {
+    const created = await call("/api/admin/invites", json({ label: "Reusable Node invite", maxUses: 3 }));
+    expect(created.status).toBe(201);
+    const { invite, url } = await created.json<{ invite: { id: string }; url: string }>();
+    const token = new URL(url).hash.slice(1);
+    database.sqlite.exec("CREATE TRIGGER fail_join BEFORE INSERT ON proxy_member BEGIN SELECT RAISE(ABORT, 'synthetic failure'); END;");
+    expect((await call("/api/invites/accept", json({ token }, "newcomer"))).status).toBe(500);
+    expect(await env.DB.prepare("SELECT use_count FROM proxy_invite WHERE id = ?").bind(invite.id).first()).toEqual({ use_count: 0 });
+    database.sqlite.exec("DROP TRIGGER fail_join");
+    expect((await call("/api/invites/accept", json({ token }, "newcomer"))).status).toBe(200);
+    expect((await call("/api/invites/accept", json({ token }, "newcomer"))).status).toBe(200);
+    expect(await env.DB.prepare("SELECT use_count FROM proxy_invite WHERE id = ?").bind(invite.id).first()).toEqual({ use_count: 1 });
+  });
+
   it("reads Better Auth sessions and owner permissions through the real Drizzle adapter", async () => {
     expect((await call("/api/session")).status).toBe(401);
     const owner = await call("/api/session", { headers: browser() });
@@ -113,7 +127,7 @@ describe("Application with Node SQLite", () => {
     const invite = await invitation.json<{ url: string }>();
     const acceptance = () => call("/api/invites/accept", json({ token: new URL(invite.url).hash.slice(1) }, "newcomer"));
     expect((await acceptance()).status).toBe(200);
-    expect((await acceptance()).status).toBe(400);
+    expect((await acceptance()).status).toBe(200); // Retrying does not consume another use.
     const start = await call("/api/cli/start", { method: "POST", headers: { "cf-connecting-ip": "192.0.2.10" } });
     const pending = await start.json<{ device_code: string; user_code: string }>();
     const poll = () => call("/api/cli/poll", { method: "POST", body: JSON.stringify({ device_code: pending.device_code }) });

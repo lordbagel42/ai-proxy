@@ -44,6 +44,7 @@ export const proxyMember = sqliteTable("proxy_member", {
 export const proxyInvite = sqliteTable("proxy_invite", {
   id: text("id").primaryKey(), tokenHash: text("token_hash").notNull(), label: text("label").notNull(),
   targetIdentity: text("target_identity"), dailyLimit: integer("daily_limit"),
+  maxUses: integer("max_uses").default(1), useCount: integer("use_count").notNull().default(0),
   expiresAt: integer("expires_at").notNull(), createdAt: integer("created_at").notNull(), createdBy: text("created_by").notNull(),
   redeemedIdentity: text("redeemed_identity"), redeemedAt: integer("redeemed_at"), revokedAt: integer("revoked_at"), redemptionId: text("redemption_id"),
 }, (t) => [uniqueIndex("proxy_invite_token_hash").on(t.tokenHash), index("proxy_invite_expiry").on(t.expiresAt)]);
