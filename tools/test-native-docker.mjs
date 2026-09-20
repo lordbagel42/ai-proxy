@@ -15,7 +15,9 @@ import { parseArgs } from 'node:util';
 import { build } from 'esbuild';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
-const { values } = parseArgs({ options: { catalog: { type: 'string' }, model: { type: 'string' } } });
+const { values } = parseArgs({ options: { catalog: { type: 'string' }, model: { type: 'string' }, scenario: { type: 'string', default: 'shell' } } });
+assert.ok(['shell', 'mixed-tools'].includes(values.scenario), 'Scenario must be shell or mixed-tools');
+const mixedTools = values.scenario === 'mixed-tools';
 const defaultModel = {
   slug: 'fixture-native', display_name: 'Synthetic Native Model', description: 'Offline fixture',
   default_reasoning_level: 'low', supported_reasoning_levels: [{ effort: 'low', description: 'Low reasoning' }],
@@ -42,6 +44,7 @@ let applicationLog = '';
 let providerError;
 let nativeTurns = 0;
 let codeModeTurns = 0;
+let assistantHistoryChecks = 0;
 const requestShapes = [];
 const completedTools = [];
 const toolCalls = [];
@@ -69,12 +72,42 @@ function fixture(body) {
   let tool;
   let argumentsText;
   let reply = 'relay-integration-ok';
+  let commentary;
   if (native) {
     nativeTurns++;
+    if (nativeTurns === 1) console.log(JSON.stringify({ nativeToolDefinitions: body.tools.map(item => ({ name: item.name, type: item.type, parameters: Object.keys(item.parameters?.properties ?? {}) })) }));
     assert.equal(body.reasoning.effort, 'low');
+    for (const item of body.input) {
+      if (item.role === 'assistant') {
+        assistantHistoryChecks++;
+        assert.ok(item.content.every(part => part.type === 'output_text'), 'assistant history must replay output_text');
+      } else if (item.role === 'user') {
+        assert.ok(item.content.every(part => ['input_text', 'input_image'].includes(part.type)), 'user history must replay input_text or input_image');
+      }
+    }
     const results = body.input.filter(item => item.type === 'function_call_output');
     for (const item of results) if (!completedTools.some(result => result.call_id === item.call_id)) completedTools.push(item);
-    if (nativeTurns <= 2) {
+    if (mixedTools && nativeTurns <= 2) {
+      assert.equal(model.tool_mode, 'code_mode_only', 'mixed-tools requires the real code-mode catalog');
+      if (nativeTurns === 1) {
+        commentary = 'I will create proof.txt and read its contents.';
+        tool = body.tools.find(item => item.name === 'functions__exec');
+        assert.ok(tool, 'mixed-tools requires the native custom code executor');
+        const patch = '*** Begin Patch\n*** Add File: proof.txt\n+relay-tool-ok\n*** End Patch';
+        const command = { cmd: "sleep 0.2; sed -n '1p' proof.txt", max_output_tokens: 100 };
+        argumentsText = JSON.stringify({ input: '// @exec: {"yield_time_ms": 1}\n' +
+          `text(await tools.apply_patch(${JSON.stringify(patch)})); text(await tools.exec_command(${JSON.stringify(command)}));` });
+        toolCalls.push(command);
+        codeModeTurns++;
+      } else {
+        assert.equal(results.length, 1, 'the custom execution output must be replayed');
+        const cellId = results[0].output.match(/cell ID ([^\s]+)/i)?.[1];
+        assert.ok(cellId, 'custom execution must yield a running cell for the native function wait tool');
+        tool = body.tools.find(item => item.name === 'functions__wait');
+        assert.ok(tool, 'mixed-tools requires the native wait function');
+        argumentsText = JSON.stringify({ cell_id: cellId, yield_time_ms: 1000, max_tokens: 1000 });
+      }
+    } else if (nativeTurns <= 2) {
       tool = body.tools.find(item => /(?:^|__)(?:exec_command|shell_command)$/.test(item.name))
         ?? body.tools.find(item => item.name === 'functions__exec' && item.parameters?.properties?.input?.type === 'string');
       if (!tool) console.error(JSON.stringify({ unsupportedFixtureTools: body.tools.map(item => ({
@@ -94,33 +127,54 @@ function fixture(body) {
       }
       toolCalls.push(command);
     } else {
-      assert.equal(nativeTurns, 3, 'native runner must need exactly two tool actions');
+      assert.equal(nativeTurns, 3, 'native runner must need exactly two top-level tool actions');
       assert.equal(results.length, 2, 'native history must preserve both tool outputs');
+      assert.deepEqual(results.map(item => item.call_id), ['call_fixture_1', 'call_fixture_2']);
+      if (mixedTools) {
+        assert.deepEqual(body.input.filter(item => item.type === 'function_call').map(item => ({ name: item.name, call_id: item.call_id })), [
+          { name: 'functions__exec', call_id: 'call_fixture_1' },
+          { name: 'functions__wait', call_id: 'call_fixture_2' },
+        ], 'upstream history must preserve both normalized custom/function names and IDs');
+      }
       assert.match(results[1].output, /relay-tool-ok/);
       reply = 'relay-native-ok';
     }
   }
   const id = `resp_fixture_${providerCalls}`;
   const itemId = `item_fixture_${providerCalls}`;
+  const outputIndex = commentary ? 1 : 0;
   const response = { id, object: 'response', created_at: Math.floor(Date.now() / 1000), status: 'in_progress', model: model.slug, output: [] };
   const item = tool
     ? { id: itemId, type: 'function_call', status: 'in_progress', call_id: `call_fixture_${nativeTurns}`, name: tool.name, arguments: '' }
     : { id: itemId, type: 'message', status: 'in_progress', role: 'assistant', phase: 'final_answer', content: [] };
-  const events = [{ type: 'response.created', response }, { type: 'response.output_item.added', output_index: 0, item }];
+  const events = [{ type: 'response.created', response }];
+  if (commentary) {
+    const commentaryId = `commentary_${providerCalls}`;
+    const part = { type: 'output_text', text: commentary, annotations: [] };
+    const message = { id: commentaryId, type: 'message', status: 'in_progress', role: 'assistant', phase: 'commentary', content: [] };
+    const coords = { output_index: 0, item_id: commentaryId, content_index: 0 };
+    events.push({ type: 'response.output_item.added', output_index: 0, item: message },
+      { type: 'response.content_part.added', ...coords, part: { ...part, text: '' } },
+      { type: 'response.output_text.delta', ...coords, delta: commentary },
+      { type: 'response.output_text.done', ...coords, text: commentary },
+      { type: 'response.content_part.done', ...coords, part },
+      { type: 'response.output_item.done', output_index: 0, item: { ...message, status: 'completed', content: [part] } });
+  }
+  events.push({ type: 'response.output_item.added', output_index: outputIndex, item });
   const complete = tool ? { ...item, status: 'completed', arguments: argumentsText }
     : { ...item, status: 'completed', content: [{ type: 'output_text', text: reply, annotations: [] }] };
   if (tool) {
     const split = Math.floor(argumentsText.length / 2);
-    for (const delta of [argumentsText.slice(0, split), argumentsText.slice(split)]) events.push({ type: 'response.function_call_arguments.delta', output_index: 0, item_id: itemId, delta });
-    events.push({ type: 'response.function_call_arguments.done', output_index: 0, item_id: itemId, arguments: argumentsText });
+    for (const delta of [argumentsText.slice(0, split), argumentsText.slice(split)]) events.push({ type: 'response.function_call_arguments.delta', output_index: outputIndex, item_id: itemId, delta });
+    events.push({ type: 'response.function_call_arguments.done', output_index: outputIndex, item_id: itemId, arguments: argumentsText });
   } else {
-    const coords = { output_index: 0, item_id: itemId, content_index: 0 };
+    const coords = { output_index: outputIndex, item_id: itemId, content_index: 0 };
     events.push({ type: 'response.content_part.added', ...coords, part: { type: 'output_text', text: '', annotations: [] } },
       { type: 'response.output_text.delta', ...coords, delta: reply },
       { type: 'response.output_text.done', ...coords, text: reply },
       { type: 'response.content_part.done', ...coords, part: complete.content[0] });
   }
-  events.push({ type: 'response.output_item.done', output_index: 0, item: complete },
+  events.push({ type: 'response.output_item.done', output_index: outputIndex, item: complete },
     { type: 'response.completed', response: { ...response, status: 'completed', output: [], usage: { input_tokens: 11, output_tokens: 5, total_tokens: 16 } } });
   return events.map((event, sequence_number) => frame({ ...event, sequence_number })).join('');
 }
@@ -201,7 +255,7 @@ try {
           assert.equal(body.input[0].type, 'additional_tools');
           assert.equal(body.input[0].role, 'developer');
           assert.ok(body.input[0].tools.length > 0);
-          requestShapes.push({ reasoning: body.reasoning, input: body.input.map(item => ({ type: item.type, role: item.role,
+          requestShapes.push({ reasoning: body.reasoning, input: body.input.map(item => ({ type: item.type, role: item.role, name: item.name, namespace: item.namespace,
             content: Array.isArray(item.content) ? 'array' : typeof item.content,
             output: Array.isArray(item.output) ? 'array' : typeof item.output })) });
         }
@@ -227,9 +281,17 @@ try {
   assert.equal(nativeTurns, 3);
   assert.equal(requestShapes.length, 3, 'all native turns must exercise Responses Lite additional_tools');
   assert.equal(completedTools.length, 2);
-  assert.deepEqual(toolCalls.map(call => call.cmd ?? call.command), ['printf relay-tool-ok > proof.txt', 'cat proof.txt']);
-  console.log(JSON.stringify({ nativeTurns, codeModeTurns }));
-  console.log('PASS exact Docker live runner offline: full protocol matrix, native picker, two shell actions, complete tool history and final reply.');
+  if (mixedTools) {
+    assert.deepEqual(toolCalls.map(call => call.cmd), ["sleep 0.2; sed -n '1p' proof.txt"]);
+    assert.ok(assistantHistoryChecks >= 2, 'both follow-up turns must replay assistant commentary');
+    const history = requestShapes.at(-1).input;
+    assert.ok(history.some(item => item.type === 'custom_tool_call' && item.name === 'exec'), 'native history must contain the custom executor call');
+    assert.ok(history.some(item => item.type === 'custom_tool_call_output' && item.output === 'string'), 'native history must contain the string custom executor output');
+    assert.ok(history.some(item => item.type === 'function_call' && item.name === 'wait'), 'native history must contain the function wait call');
+    assert.ok(history.some(item => item.type === 'function_call_output' && item.output === 'array'), 'native history must contain the structured function wait output');
+  } else assert.deepEqual(toolCalls.map(call => call.cmd ?? call.command), ['printf relay-tool-ok > proof.txt', 'cat proof.txt']);
+  console.log(JSON.stringify({ scenario: values.scenario, nativeTurns, codeModeTurns, assistantHistoryChecks }));
+  console.log('PASS exact Docker live runner offline: full protocol matrix, native picker, synthetic file actions, complete tool history and final reply.');
 } catch (error) {
   console.error(error.stack ?? String(error));
   process.exitCode = 1;

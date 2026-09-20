@@ -257,6 +257,15 @@ The offline native Docker regression requires the client image built with `docke
 
 To reproduce native request construction from an exported public model catalog, run `npm run test:native:docker -- --catalog /absolute/path/to/catalog.json` (optionally `--model MODEL_ID`). The catalog must include its native `models` metadata and `default_model`. The fixture supports direct shell tools and JavaScript tool mode, and combines Responses Lite tool declarations with missing upstream Content-Type and empty terminal output snapshots. Account credentials and generation responses remain synthetic; keep external catalog fixtures outside Git.
 
+For a catalog model with `tool_mode: "code_mode_only"`, add `--scenario mixed-tools`:
+
+```sh
+npm run test:native:docker -- --catalog /absolute/path/to/catalog.json \
+  --model MODEL_ID --scenario mixed-tools
+```
+
+This scenario sends assistant commentary before a native `functions.exec` custom call, runs nested `apply_patch` and shell actions to create and read `proof.txt`, then completes the asynchronous execution with the `functions.wait` function tool. It verifies both native tool call/output formats, their IDs and names across follow-up requests, and assistant history encoded as `output_text`. The Docker runner, native CLI options, and catalog remain unchanged.
+
 Live integration testing runs the native Codex CLI in an isolated Docker container against an already deployed gateway:
 
 ```sh
