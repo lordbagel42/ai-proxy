@@ -1,14 +1,16 @@
 # Friends AI Proxy
 
-A private AI gateway with Hack Club sign-in, Better Auth sessions, personal API keys, and native Codex CLI support. It can run in a Cloudflare Worker or as a production Node/Docker server with persistent SQLite. Both runtimes connect directly to ChatGPT and other configured providers.
+A self-hosted AI gateway for an invited circle, with Hack Club sign-in, Better Auth sessions, personal API keys, and native Codex CLI support. Run it in a Cloudflare Worker or as a Node/Docker server with persistent SQLite. Both runtimes connect directly to ChatGPT and other configured providers.
 
-**Deployment:** [relay.raygen.dev](https://relay.raygen.dev). The owner has connected ChatGPT, but live testing on September 19, 2026 found that ChatGPT returns an HTML HTTP 403 to this Worker’s subscription requests. Live inference is blocked. Account model discovery, native CLI metadata, and protocol handling are implemented and tested against controlled upstreams; the dashboard reports upstream unavailability rather than inventing a model list. See [the integration report](docs/integration-check.md).
+**Status:** protocol handling, account model discovery, and native CLI integration are tested against controlled upstreams. The ChatGPT subscription integration is experimental: a private Cloudflare deployment returned an upstream HTML 403 during testing on September 19, 2026. Successful sign-in does not establish live inference availability. See [the historical integration report](docs/integration-check.md) and verify your own deployment.
 
-**Proxmox migration:** the production server, Docker image, database import tools, standby mode, and Worker migration freeze are available. See [the deployment contract and cutover procedure](docs/proxmox-deployment.md). Runtime/container tests use controlled upstreams; the deployment owner must verify live ChatGPT access from Proxmox before claiming the 403 is resolved.
+Start with [client installation](#native-codex-for-friends), [local development](#local-development), or the [Node/Proxmox deployment guide](docs/proxmox-deployment.md). Example domains and identities must be replaced with your own. Source access does not grant access to a hosted gateway or an upstream account.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development checks and [SECURITY.md](SECURITY.md) for private vulnerability reporting and deployment boundaries.
 
 ## Connect ChatGPT
 
-1. Open [the admin dashboard](https://relay.raygen.dev/admin) and sign in with Hack Club. The configured owner is `ident!R9zf0a`.
+1. Open `/admin` on your deployment and sign in with the Hack Club identity configured in `OWNER_HACKCLUB_ID`.
 2. In **ChatGPT connection**, choose **Generate sign-in link**, then open the generated OpenAI URL.
 3. Sign in with ChatGPT. The browser redirects to `http://localhost:1455/auth/callback?...`. The page may fail to load; this is expected when no local Codex login server is running.
 4. Copy the **entire final URL** from the address bar into the dashboard's callback field and finish connecting. Do not share that URL: it contains a short-lived authorization code.
@@ -17,15 +19,15 @@ The Worker generates PKCE and state, validates the pasted callback, and exchange
 
 Only the configured owner can manage this connection. Reconnecting keeps the previous credentials until the replacement login succeeds. **Disconnect account** removes the stored connection and pending sign-in; already running requests may finish.
 
-The Hack Club OAuth redirect URI remains:
+Register this Hack Club OAuth redirect URI, replacing the example domain with your deployment's origin:
 
 ```text
-https://relay.raygen.dev/api/auth/callback/hackclub
+https://proxy.example.com/api/auth/callback/hackclub
 ```
 
 ## Manage your circle
 
-The black dashboard at [`/admin`](https://relay.raygen.dev/admin) includes usage analytics, a member leaderboard, invitations, member controls, and the shared ChatGPT connection.
+The dashboard at `/admin` includes usage analytics, a member leaderboard, invitations, member controls, and the shared ChatGPT connection.
 
 - **Invite people:** choose a single-use link, a custom limit of 2–500 new members, or a reusable link with unlimited uses. Copy the link and share it yourself. All links expire after seven days and can be restricted to one Hack Club identity. The dashboard shows used and remaining capacity; existing members and repeated acceptance do not spend extra uses. The full link is shown only when created; the database stores its hash.
 - **Join:** a friend opens the link, signs in with Hack Club, and accepts. They then create their own API keys or approve a terminal login. Signing in alone does not grant model access.
@@ -95,7 +97,7 @@ npm install @lordbagel42/ai-proxy@0.1.0
 Then sign in and start Codex:
 
 ```sh
-npx ai-proxy login --url https://relay.raygen.dev
+npx ai-proxy login --url https://proxy.example.com
 # Check the terminal code in your browser, sign in with Hack Club, and approve it.
 npx ai-proxy codex
 ```
@@ -123,7 +125,7 @@ web_search = "disabled"
 
 [model_providers.friends_proxy]
 name = "Friends AI Proxy"
-base_url = "https://relay.raygen.dev/v1"
+base_url = "https://proxy.example.com/v1"
 wire_api = "responses"
 env_key = "AI_PROXY_API_KEY"
 ```
@@ -202,32 +204,44 @@ For a different protocol, implement `Provider.open()` in `src/providers/`: it re
 
 ## Deployment
 
-The production gateway is [relay.raygen.dev](https://relay.raygen.dev) in the Raygen Cloudflare account. Its D1 database and Hack Club OAuth credentials are provisioned. `env.production.vars` in `wrangler.jsonc` sets:
+The tracked `wrangler.jsonc` is a reusable template with no production account, database ID, or default owner. Create your deployment configuration once:
 
-- `BETTER_AUTH_URL=https://relay.raygen.dev`
-- `OWNER_HACKCLUB_ID=ident!R9zf0a`
-- `ALLOWED_HACKCLUB_IDS=ident!R9zf0a`
+```sh
+cp wrangler.jsonc wrangler.production.local.jsonc
+```
+
+Keep an existing private configuration rather than overwriting it. This file is ignored by Git and is the configuration used by `npm run deploy`.
+
+In `wrangler.production.local.jsonc`, set your Cloudflare account ID under `env.production.account_id`, your domain under `env.production.routes`, and the production variables:
+
+- `BETTER_AUTH_URL=https://proxy.example.com`
+- `OWNER_HACKCLUB_ID=ident!your-owner-id`
+- `ALLOWED_HACKCLUB_IDS=ident!your-owner-id`
 - The `codex` provider configuration above.
 
-Invite friends from the admin dashboard. Keep `OWNER_HACKCLUB_ID` set to the account owner.
+Use your own Hack Club identity for `OWNER_HACKCLUB_ID`. The optional allowlist is only for bootstrap members; invite other people from the admin dashboard. The blank owner in the shared template grants nobody owner access.
 
-For an existing deployment:
+For a new deployment, create the database and put its returned ID in the production `DB` binding of your private configuration:
+
+```sh
+npx wrangler d1 create ai-proxy --config wrangler.production.local.jsonc --env production
+```
+
+Register `https://proxy.example.com/api/auth/callback/hackclub` with your own domain in your Hack Club OAuth application. For both new and existing deployments, apply migrations before deploying:
 
 ```sh
 npm run check
-npx wrangler d1 migrations apply ai-proxy --remote --env production
+npx wrangler d1 migrations apply ai-proxy --remote --config wrangler.production.local.jsonc --env production
 npm run deploy
 ```
-
-For a fresh deployment, create the D1 database with `npx wrangler d1 create ai-proxy --env production`, put its returned ID in the production `DB` binding, and configure the public origin and custom domain before deploying. Register `https://relay.raygen.dev/api/auth/callback/hackclub` for the current production origin, or the corresponding callback path for your own domain.
 
 Provision these Worker secrets when creating a deployment:
 
 ```sh
-npx wrangler secret put BETTER_AUTH_SECRET --env production
-npx wrangler secret put HACKCLUB_CLIENT_ID --env production
-npx wrangler secret put HACKCLUB_CLIENT_SECRET --env production
-node -e 'process.stdout.write(require("node:crypto").randomBytes(32).toString("base64url"))' | npx wrangler secret put CODEX_TOKEN_KEY --env production
+npx wrangler secret put BETTER_AUTH_SECRET --config wrangler.production.local.jsonc --env production
+npx wrangler secret put HACKCLUB_CLIENT_ID --config wrangler.production.local.jsonc --env production
+npx wrangler secret put HACKCLUB_CLIENT_SECRET --config wrangler.production.local.jsonc --env production
+node -e 'process.stdout.write(require("node:crypto").randomBytes(32).toString("base64url"))' | npx wrangler secret put CODEX_TOKEN_KEY --config wrangler.production.local.jsonc --env production
 ```
 
 Keep `CODEX_TOKEN_KEY` stable across deployments; replacing it makes the stored ChatGPT connection unreadable. Disconnect the account before replacing the key, then reconnect afterward. Add API-key secrets only for providers you configure.
@@ -245,7 +259,7 @@ Worker invocation logs and traces are enabled with 100% sampling in `wrangler.js
 - Reasoning contents and encrypted reasoning are not retained or replayed. Requested thinking configuration is rejected for Anthropic inputs. Responses reasoning effort, summary, and context are validated and forwarded to compatible providers. Cache-control hints and other provider-specific metadata are not forwarded. This is a supported subset of the protocols, not a complete API clone.
 - Request bodies are limited to 1 MiB, generated content to 2 MiB, and requested output to 32,768 tokens for upstreams that support token caps. Requests time out after five minutes. A client disconnect cancels its upstream request. The Codex adapter retries once after an authentication rejection and token refresh, before generated content; generation failures are not automatically retried.
 - All approved users can access every configured alias. Analytics record attempts and provider-reported tokens. There is no billing, per-model entitlement system, account pool, or automatic failover.
-- Live ChatGPT subscription inference currently fails with an upstream HTML 403 from this Worker. Successful OAuth sign-in does not establish inference availability. Credentials are provisioned privately and are not included in source control.
+- A previous Cloudflare deployment returned an upstream HTML 403 for ChatGPT subscription inference. Successful OAuth sign-in does not establish inference availability on any particular host. Credentials must be provisioned privately and kept outside source control.
 
 ## Development and verification
 
@@ -278,8 +292,12 @@ This scenario sends assistant commentary before a native `functions.exec` custom
 Live integration testing runs the native Codex CLI in an isolated Docker container against an already deployed gateway:
 
 ```sh
-npm run test:docker -- --live --url https://relay.raygen.dev \
+npm run test:docker -- --live --url https://proxy.example.com \
   --key-file /absolute/path/to/a/temporary-proxy-key
 ```
 
 The key file must contain a gateway key, not a ChatGPT token. The container receives it as a read-only runtime mount, has a temporary home/workspace, and never mounts host Codex credentials. This test makes real requests: streaming and buffered calls through all three protocols, native model discovery, and a Codex shell tool write/read round trip. It fails on upstream rejection, missing usage, stream failures, a mismatched model list, or missing tool execution. Revoke the temporary key afterward.
+
+## Licensing
+
+A project-wide open-source license has not been selected. Third-party components retain their own licenses: bundled Geist fonts use the [SIL Open Font License](public/fonts/OFL.txt), and generated runtime declarations retain the notices in [worker-configuration.d.ts](worker-configuration.d.ts).

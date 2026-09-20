@@ -1,3 +1,4 @@
+// Public template. Copy to wrangler.production.local.jsonc and configure your deployment.
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "ai-proxy",
@@ -37,7 +38,7 @@
     "ALLOWED_HACKCLUB_IDS": "",
     "REQUESTS_PER_MINUTE": "20",
     "PROVIDERS_JSON": "[{\"id\":\"codex\",\"protocol\":\"codex\",\"discoverModels\":true,\"models\":{}}]",
-    "OWNER_HACKCLUB_ID": "ident!R9zf0a"
+    "OWNER_HACKCLUB_ID": ""
   },
   "triggers": {
     "crons": [
@@ -47,27 +48,25 @@
   "env": {
     "production": {
       "name": "ai-proxy",
-      "account_id": "2fa4104b17af8808577f12883fa657b1",
       "workers_dev": true,
       "preview_urls": false,
       "d1_databases": [
         {
           "binding": "DB",
           "database_name": "ai-proxy",
-          "database_id": "249e8df8-1be3-42c0-b796-1957efef37cb",
           "migrations_dir": "migrations"
         }
       ],
       "vars": {
-        "BETTER_AUTH_URL": "https://relay.raygen.dev",
-        "ALLOWED_HACKCLUB_IDS": "ident!R9zf0a",
+        "BETTER_AUTH_URL": "https://proxy.example.com",
+        "ALLOWED_HACKCLUB_IDS": "",
         "REQUESTS_PER_MINUTE": "20",
         "PROVIDERS_JSON": "[{\"id\":\"codex\",\"protocol\":\"codex\",\"discoverModels\":true,\"models\":{}}]",
-        "OWNER_HACKCLUB_ID": "ident!R9zf0a"
+        "OWNER_HACKCLUB_ID": ""
       },
       "routes": [
         {
-          "pattern": "relay.raygen.dev",
+          "pattern": "proxy.example.com",
           "custom_domain": true
         }
       ]

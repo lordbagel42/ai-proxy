@@ -18,7 +18,7 @@
     "check": "npm run typecheck && npm test && npm run test:client && npm run build && npm run build:server",
     "build": "wrangler deploy --env \"\" --dry-run --outdir dist",
     "db:migrate": "wrangler d1 migrations apply ai-proxy --local",
-    "deploy": "wrangler deploy --env production",
+    "deploy": "wrangler deploy --config wrangler.production.local.jsonc --env production",
     "test:client": "node --test test/client-models.test.mjs",
     "test:client:package": "node tools/test-client-package.mjs",
     "test:docker": "node tools/test-docker.mjs",

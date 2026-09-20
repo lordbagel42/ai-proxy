@@ -13,7 +13,7 @@ npm install @lordbagel42/ai-proxy@0.1.0
 ## Use
 
 ```sh
-npx ai-proxy login --url https://relay.raygen.dev
+npx ai-proxy login --url https://proxy.example.com
 npx ai-proxy models
 npx ai-proxy codex
 npx ai-proxy codex --model MODEL_ID exec 'Explain this project'

@@ -29,6 +29,7 @@ auth.json
 credentials.json
 *.credentials.json
 .npmrc
+wrangler.*.local.jsonc
 !.dev.vars.example
 !.relay.env.example
 
@@ -65,6 +66,14 @@ pnpm-debug.log*
 *.db-journal
 *.db-shm
 *.db-wal
+*.sql.gz
+*.sqlite.gz
+*.tgz
+backups/
+exports/
+/d1.sql
+*.dump
+*.dump.sql
 
 # --- OS / editor noise ---
 .DS_Store

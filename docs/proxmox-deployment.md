@@ -2,6 +2,8 @@
 
 The production image runs the same application handlers, Better Auth/Hack Club login, dashboard, provider integrations, and API protocols as the Worker. `server/main.ts` supplies Node HTTP, static assets, a persistent D1-compatible SQLite binding, background work, and daily cleanup. No Cloudflare runtime or API is required by the server.
 
+Domains, identities, and host paths below are examples. Supply your own values; when migrating an existing deployment, preserve its owner identity and original encryption secrets.
+
 ## Image and process
 
 ```sh
@@ -32,9 +34,9 @@ Required existing secret names:
 Required/non-secret production values:
 
 ```dotenv
-BETTER_AUTH_URL=https://relay.raygen.dev
-OWNER_HACKCLUB_ID=ident!R9zf0a
-ALLOWED_HACKCLUB_IDS=ident!R9zf0a
+BETTER_AUTH_URL=https://proxy.example.com
+OWNER_HACKCLUB_ID=ident!your-owner-id
+ALLOWED_HACKCLUB_IDS=ident!your-owner-id
 REQUESTS_PER_MINUTE=20
 PROVIDERS_JSON='[{"id":"codex","protocol":"codex","discoverModels":true,"models":{}}]'
 DATABASE_PATH=/data/ai-proxy.sqlite
@@ -43,7 +45,7 @@ AI_PROXY_SERVING_ENABLED=false
 
 Optional values: `HOST` (default `0.0.0.0`), `PORT` (3000), `SHUTDOWN_GRACE_MS` (30000), `ASSETS_PATH` (`/app/public` in Docker), `MIGRATIONS_PATH` (`/app/migrations`), `TRUSTED_PROXY_IPS` (empty by default). Set `TRUSTED_PROXY_IPS` to the verified immediate Traefik peer IP or a tightly scoped CIDR. Account for container networking/SNAT. The trusted ingress must overwrite `CF-Connecting-IP` and be inaccessible to untrusted clients. Other forwarding headers are removed; request origins always come from `BETTER_AUTH_URL`.
 
-Hack Club callback stays **`https://relay.raygen.dev/api/auth/callback/hackclub`**. ChatGPT browser login retains **`http://localhost:1455/auth/callback`**, which is pasted into the dashboard.
+Hack Club callback stays **`https://proxy.example.com/api/auth/callback/hackclub`**. ChatGPT browser login retains **`http://localhost:1455/auth/callback`**, which is pasted into the dashboard.
 
 The existing Worker secrets are not readable using Wrangler's secret-list API. Recover the original deployment secret source or coordinate secure recovery with the deployment owner before importing encrypted data. Do not generate replacement keys. Never put values in Git, image layers, Nomad job documents, command arguments, or handoff messages.
 
@@ -74,13 +76,13 @@ The reusable-invitation update includes `0005_invite-use-limits.sql`. Apply it b
 
 ## Candidate, freeze, and cutover
 
-1. Recover the exact existing secrets into restricted storage. Export D1 into a restricted directory and retain a rollback copy. The homelab deployment session owns this transfer and routing.
+1. Recover the exact existing secrets into restricted storage. Export D1 into a restricted directory and retain a rollback copy. Coordinate the database transfer and routing with the deployment operator.
 2. Import into candidate storage and compare table counts and encrypted connection presence. Start with `AI_PROXY_SERVING_ENABLED=false`. `/health` returns `{"status":"ok","serving":false}` only after schema validation; every other route returns 503, no provider requests are made, and cleanup is disabled. A successful health check alone does **not** prove inference works.
 3. Deploy this revision's Worker code with `MAINTENANCE_MODE=true` as an environment binding at **100%** when ready to freeze. The switch blocks every non-health route and scheduled cleanup, including on workers.dev. Earlier Worker revisions do not have this switch. Confirm `/health` reports `serving:false` and authenticated API calls return 503 on both public entrypoints.
 4. Wait at least **six minutes** for old generations, OAuth exchanges, token refreshes, and background writes to drain before the final export. Do not disable maintenance during final export or candidate validation.
 5. Stop the candidate, retain its old DB separately, import the final D1 export into an absent destination, validate it, and compare final counts. Keep the Worker frozen while enabling `AI_PROXY_SERVING_ENABLED=true` and starting exactly one active allocation.
 6. Verify real authenticated account model discovery and generation **from the Proxmox deployment**. Check dashboard/browser catalog parity, native Codex model picker and a shell-tool round trip, all six API/stream variants, HCA sessions, invitations, metrics, and disconnect accounting. The repository's controlled-upstream tests do not establish account eligibility or eliminate the observed ChatGPT 403.
-7. Cut over `relay.raygen.dev` through the tunnel after validation. Preserve the original Worker and D1 backup, with the Worker still frozen. New Node tokens/session data must not be discarded on rollback: stop Node first and coordinate a current consistent database transfer back before reactivating the Worker. Never activate both copies of refresh credentials.
+7. Cut over `proxy.example.com` through the tunnel after validation. Preserve the original Worker and D1 backup, with the Worker still frozen. New Node tokens/session data must not be discarded on rollback: stop Node first and coordinate a current consistent database transfer back before reactivating the Worker. Never activate both copies of refresh credentials.
 
 ## Cleanup, shutdown, and logging
 
