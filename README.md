@@ -255,6 +255,8 @@ The Codex smoke test creates an ephemeral database and temporary working directo
 
 The offline native Docker regression requires the client image built with `docker build -f Dockerfile.e2e -t ai-proxy-e2e:codex-0.154.0 .`. It runs the unchanged live-test runner against local synthetic credentials, model metadata, and Codex responses, including the native model picker and two shell actions. Unexpected upstream or OAuth requests are blocked.
 
+To reproduce native request construction from an exported public model catalog, run `npm run test:native:docker -- --catalog /absolute/path/to/catalog.json` (optionally `--model MODEL_ID`). The catalog must include its native `models` metadata and `default_model`. The fixture supports direct shell tools and JavaScript tool mode, and combines Responses Lite tool declarations with missing upstream Content-Type and empty terminal output snapshots. Account credentials and generation responses remain synthetic; keep external catalog fixtures outside Git.
+
 Live integration testing runs the native Codex CLI in an isolated Docker container against an already deployed gateway:
 
 ```sh

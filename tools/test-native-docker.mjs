@@ -4,22 +4,19 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createCipheriv, createHash, randomBytes } from 'node:crypto';
-import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
+import { parseArgs } from 'node:util';
 import { build } from 'esbuild';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
-const directory = await mkdtemp(join(tmpdir(), 'ai-proxy-native-docker-'));
-const key = `ap_${randomBytes(32).toString('hex')}`;
-const accessToken = 'synthetic-native-unused-outside-fixture';
-const accountId = 'synthetic-native-account';
-const tokenKey = randomBytes(32);
-const model = {
+const { values } = parseArgs({ options: { catalog: { type: 'string' }, model: { type: 'string' } } });
+const defaultModel = {
   slug: 'fixture-native', display_name: 'Synthetic Native Model', description: 'Offline fixture',
   default_reasoning_level: 'low', supported_reasoning_levels: [{ effort: 'low', description: 'Low reasoning' }],
   shell_type: 'unified_exec', visibility: 'list', supported_in_api: true, priority: 0,
@@ -28,6 +25,15 @@ const model = {
   experimental_supported_tools: [], input_modalities: ['text'], use_responses_lite: true, supports_experimental_context: true,
   model_messages: { instructions_template: 'Use the supplied tools to carry out the task.' },
 };
+const catalog = values.catalog ? JSON.parse(await readFile(values.catalog, 'utf8')) : { models: [defaultModel], default_model: defaultModel.slug };
+assert.ok(Array.isArray(catalog.models) && catalog.models.length, 'Catalog fixture must contain native models');
+const model = catalog.models.find(model => model.slug === (values.model ?? catalog.default_model));
+assert.ok(model, 'Selected model must exist in the catalog fixture');
+const directory = await mkdtemp(join(tmpdir(), 'ai-proxy-native-docker-'));
+const key = `ap_${randomBytes(32).toString('hex')}`;
+const accessToken = 'synthetic-native-unused-outside-fixture';
+const accountId = 'synthetic-native-account';
+const tokenKey = randomBytes(32);
 const frame = (event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`;
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 const servers = [];
@@ -35,6 +41,7 @@ let application;
 let applicationLog = '';
 let providerError;
 let nativeTurns = 0;
+let codeModeTurns = 0;
 const requestShapes = [];
 const completedTools = [];
 const toolCalls = [];
@@ -68,10 +75,24 @@ function fixture(body) {
     const results = body.input.filter(item => item.type === 'function_call_output');
     for (const item of results) if (!completedTools.some(result => result.call_id === item.call_id)) completedTools.push(item);
     if (nativeTurns <= 2) {
-      tool = body.tools.find(item => item.name === 'exec_command' || item.name.endsWith('__exec_command'));
-      assert.ok(tool, 'native runner must advertise exec_command');
-      argumentsText = JSON.stringify({ cmd: nativeTurns === 1 ? 'printf relay-tool-ok > proof.txt' : 'cat proof.txt', max_output_tokens: 100 });
-      toolCalls.push(JSON.parse(argumentsText));
+      tool = body.tools.find(item => /(?:^|__)(?:exec_command|shell_command)$/.test(item.name))
+        ?? body.tools.find(item => item.name === 'functions__exec' && item.parameters?.properties?.input?.type === 'string');
+      if (!tool) console.error(JSON.stringify({ unsupportedFixtureTools: body.tools.map(item => ({
+        type: item.type, name: item.name, parameters: Object.keys(item.parameters?.properties ?? {}),
+      })) }));
+      assert.ok(tool, 'native runner must advertise a shell tool or the code-mode executor');
+      const commandField = /(?:^|__)shell_command$/.test(tool.name) ? 'command' : 'cmd';
+      const command = { [commandField]: nativeTurns === 1 ? 'printf relay-tool-ok > proof.txt' : 'cat proof.txt',
+        ...(commandField === 'cmd' ? { max_output_tokens: 100 } : {}) };
+      if (tool.name === 'functions__exec') {
+        codeModeTurns++;
+        // Native code mode wraps the same fixed shell action in a custom JS tool.
+        argumentsText = JSON.stringify({ input: `const result = await tools.exec_command(${JSON.stringify(command)}); text(result);` });
+      } else {
+        assert.ok(tool.parameters?.properties?.[commandField], 'shell tool must declare its command argument');
+        argumentsText = JSON.stringify(command);
+      }
+      toolCalls.push(command);
     } else {
       assert.equal(nativeTurns, 3, 'native runner must need exactly two tool actions');
       assert.equal(results.length, 2, 'native history must preserve both tool outputs');
@@ -115,7 +136,7 @@ try {
       if (request.url === '/models?client_version=0.154.0') {
         assert.equal(request.method, 'GET');
         response.writeHead(200, { 'content-type': 'application/json' });
-        response.end(JSON.stringify({ models: [model] }));
+        response.end(JSON.stringify({ models: catalog.models }));
         return;
       }
       assert.equal(request.url, '/responses');
@@ -173,8 +194,8 @@ try {
       if (request.url.endsWith('/responses') && bytes.length) {
         const body = JSON.parse(bytes);
         if (Array.isArray(body.input) && body.input.some(item => item.type === 'additional_tools')) {
-          assert.equal(body.tools, undefined, 'Responses Lite must send tools inside input');
-          assert.equal(body.instructions, undefined, 'Responses Lite sends instructions as developer messages');
+          assert.ok(body.tools === undefined, 'Responses Lite must send tools inside input');
+          assert.ok(body.instructions === undefined, 'Responses Lite sends instructions as developer messages');
           assert.equal(body.reasoning.effort, 'low');
           assert.equal(body.reasoning.context, 'all_turns');
           assert.equal(body.input[0].type, 'additional_tools');
@@ -206,7 +227,8 @@ try {
   assert.equal(nativeTurns, 3);
   assert.equal(requestShapes.length, 3, 'all native turns must exercise Responses Lite additional_tools');
   assert.equal(completedTools.length, 2);
-  assert.deepEqual(toolCalls.map(call => call.cmd), ['printf relay-tool-ok > proof.txt', 'cat proof.txt']);
+  assert.deepEqual(toolCalls.map(call => call.cmd ?? call.command), ['printf relay-tool-ok > proof.txt', 'cat proof.txt']);
+  console.log(JSON.stringify({ nativeTurns, codeModeTurns }));
   console.log('PASS exact Docker live runner offline: full protocol matrix, native picker, two shell actions, complete tool history and final reply.');
 } catch (error) {
   console.error(error.stack ?? String(error));
