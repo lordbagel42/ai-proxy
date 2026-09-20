@@ -112,6 +112,30 @@ describe("Worker generation routes", () => {
     expect(response.headers.get("content-type")).toContain("text/event-stream");
     const body = await response.text(); expect(body).toContain("response.completed"); expect(body).toContain("call_demo");
   });
+  it.each(["anthropic", "openai-chat"])("allows native Codex's disabled reasoning settings for %s", async (protocol) => {
+    const overrides = { PROVIDERS_JSON: JSON.stringify([{ id: "claude", protocol, baseUrl: "https://relay.test/v1",
+      credential: "RELAY_SHARED_SECRET", models: { claude: "upstream-model" } }]) };
+    const upstream = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response("upstream busy", { status: 429 }));
+    for (const reasoning of [{}, { effort: "none", summary: "none" }, { summary: "auto" }]) {
+      const response = await call("/v1/responses", { method: "POST", headers: keyHeaders(),
+        body: JSON.stringify({ model: "claude", input: "Hello", reasoning }) }, overrides);
+      // Reaching the provider proves the neutral native defaults were accepted.
+      expect(response.status).toBe(429);
+    }
+    expect(upstream).toHaveBeenCalledTimes(3);
+    for (const [, init] of upstream.mock.calls) expect(JSON.parse(String(init?.body))).not.toHaveProperty("reasoning");
+  });
+  it.each(["anthropic", "openai-chat"])("rejects active unsupported reasoning controls for %s before forwarding", async (protocol) => {
+    const overrides = { PROVIDERS_JSON: JSON.stringify([{ id: "claude", protocol, baseUrl: "https://relay.test/v1",
+      credential: "RELAY_SHARED_SECRET", models: { claude: "upstream-model" } }]) };
+    const upstream = vi.spyOn(globalThis, "fetch");
+    for (const reasoning of [{ effort: "high" }, { summary: "concise" }, { context: "auto" }]) {
+      const response = await call("/v1/responses", { method: "POST", headers: keyHeaders(),
+        body: JSON.stringify({ model: "claude", input: "Hello", reasoning }) }, overrides);
+      expect(response.status).toBe(400);
+    }
+    expect(upstream).not.toHaveBeenCalled();
+  });
   it("returns upstream rate limits before committing an SSE response", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("private upstream details", { status: 429, headers: { "retry-after": "9" } }));
     const response = await call("/v1/responses", { method: "POST", headers: keyHeaders(), body: '{"model":"claude","input":"hello","stream":true}' });

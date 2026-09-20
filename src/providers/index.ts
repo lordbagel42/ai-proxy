@@ -15,7 +15,8 @@ const apiDefinition = z.object({
 }).strict();
 const definition = z.union([apiDefinition, z.object({
   id: z.string().regex(/^[a-z][a-z0-9-]*$/), protocol: z.literal("codex"),
-  models: z.record(z.string().min(1), z.string().min(1)),
+  models: z.record(z.string().min(1), z.string().min(1)).default({}),
+  discoverModels: z.boolean().default(false),
 }).strict()]);
 export type ProviderDefinition = z.infer<typeof definition>;
 export interface Provider {
@@ -32,13 +33,14 @@ export function configuredProviders(json: string): ProviderDefinition[] {
         if (url.username || url.password || url.search || url.hash) throw new Error("Invalid provider URL");
         if (url.protocol !== "https:" && !(url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname))) throw new Error("HTTPS required");
       }
-      if (ids.has(d.id) || !Object.keys(d.models).length) throw new Error("Invalid provider ID or models");
+      if (ids.has(d.id) || (!Object.keys(d.models).length && !(d.protocol === "codex" && d.discoverModels))) throw new Error("Invalid provider ID or models");
       ids.add(d.id);
       for (const model of Object.keys(d.models)) {
         if (models.has(model)) throw new Error("Duplicate model alias");
         models.add(model);
       }
     }
+    if (definitions.filter((d) => d.protocol === "codex" && d.discoverModels).length > 1) throw new Error("Only one connected Codex catalog is supported");
     return definitions;
   } catch { throw new ApiError(503, "Provider configuration is invalid.", "configuration_error"); }
 }

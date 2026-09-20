@@ -23,7 +23,8 @@ class Accumulator {
       if (event.type === "text_start" || event.type === "tool_start") {
         if (this.indexes.has(event.index)) throw new ApiError(502, "Upstream reused a content block index.", "api_error");
         this.indexes.set(event.index, this.result.blocks.length);
-        this.result.blocks.push(event.type === "text_start" ? { type: "text", text: "" } : { type: "tool", id: event.id, name: event.name, arguments: "" });
+        this.result.blocks.push(event.type === "text_start" ? { type: "text", text: "", ...(event.phase !== undefined ? { phase: event.phase } : {}) }
+          : { type: "tool", id: event.id, name: event.name, arguments: "" });
       } else {
         const index = this.indexes.get(event.index);
         const block = index === undefined ? undefined : this.result.blocks[index];
@@ -32,6 +33,7 @@ class Accumulator {
         else if (event.type === "tool_delta" && block.type === "tool") { block.arguments += event.arguments; this.size += event.arguments.length; }
         else if (event.type === "block_stop") {
           this.stopped.add(event.index);
+          if (block.type === "text" && event.phase !== undefined) block.phase = event.phase;
           if (block.type === "tool") {
             block.arguments ||= "{}";
             try {
@@ -62,6 +64,7 @@ function responseItem(c: Completion, index: number, request: GenerationRequest, 
   const block = c.blocks[index]!;
   if (block.type === "text") return {
     type: "message", id: `msg_${c.id}_${index}`, role: "assistant", status: complete ? "completed" : "in_progress",
+    ...(block.phase !== undefined ? { phase: block.phase } : {}),
     content: complete ? [{ type: "output_text", text: block.text, annotations: [], logprobs: [] }] : [],
   };
   const tool = request.tools.find((t) => t.name === block.name);

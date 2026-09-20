@@ -1,6 +1,6 @@
 import { ApiError } from "../core/errors";
 import { readSSE } from "../core/sse";
-import type { Event, GenerationRequest, JsonObject } from "../core/types";
+import type { Event, GenerationRequest, JsonObject, MessagePhase } from "../core/types";
 
 /** Responses history is an ordered list: tool items must not be moved around messages. */
 export function responsesBody(request: GenerationRequest, model: string): JsonObject {
@@ -9,7 +9,8 @@ export function responsesBody(request: GenerationRequest, model: string): JsonOb
   for (const message of request.messages) {
     let content: JsonObject[] = [];
     const flush = () => {
-      if (content.length) input.push({ role: message.role, content });
+      if (content.length) input.push({ role: message.role, content,
+        ...(message.role === "assistant" && message.phase !== undefined ? { phase: message.phase } : {}) });
       content = [];
     };
     for (const part of message.content) {
@@ -31,6 +32,7 @@ export function responsesBody(request: GenerationRequest, model: string): JsonOb
       description: tool.description, parameters: tool.parameters, strict: false })),
     tool_choice: typeof request.toolChoice === "object" ? { type: "function", name: request.toolChoice.name } : request.toolChoice,
     parallel_tool_calls: request.parallelTools,
+    reasoning: request.reasoning,
   };
 }
 
@@ -44,13 +46,17 @@ function record(value: unknown): JsonObject {
 function text(value: unknown): string { if (typeof value !== "string") invalid(); return value; }
 function identifier(value: unknown): string { const result = text(value); if (!result) invalid(); return result; }
 function integer(value: unknown): number { if (!Number.isSafeInteger(value) || (value as number) < 0) invalid(); return value as number; }
+function phase(value: unknown): MessagePhase | undefined {
+  if (value === undefined || value === null || value === "commentary" || value === "final_answer") return value;
+  invalid("The upstream returned an invalid assistant message phase.");
+}
 function argumentsObject(value: string): void {
   try { record(JSON.parse(value)); } catch { invalid("The upstream returned invalid tool arguments."); }
 }
 
 interface TextPart { index: number; text: string; textDone: boolean; done: boolean }
 type OutputItem = { id: string; done: boolean } & (
-  | { type: "message"; parts: Map<number, TextPart> }
+  | { type: "message"; parts: Map<number, TextPart>; phase?: MessagePhase }
   | { type: "function_call"; index: number; callId: string; name: string; arguments: string; argumentsDone: boolean }
   | { type: "reasoning" }
 );
@@ -80,6 +86,7 @@ export async function* responsesEvents(body: ReadableStream<Uint8Array>): AsyncG
       if (snapshot.call_id !== item.callId || snapshot.name !== item.name || snapshot.arguments !== item.arguments) invalid();
     } else if (item.type === "message") {
       if (snapshot.role !== "assistant" || !Array.isArray(snapshot.content) || snapshot.content.length !== item.parts.size) invalid();
+      if (snapshot.phase !== undefined && phase(snapshot.phase) !== item.phase) invalid();
       snapshot.content.forEach((raw, index) => {
         const part = record(raw);
         if (part.type !== "output_text" || part.text !== item.parts.get(index)?.text) invalid();
@@ -90,6 +97,9 @@ export async function* responsesEvents(body: ReadableStream<Uint8Array>): AsyncG
     let data: JsonObject;
     try { data = record(JSON.parse(frame.data)); } catch { invalid("The upstream returned malformed Responses data."); }
     const type = text(data.type);
+    // Codex interleaves transport/account metadata with Responses events. These
+    // are not content and may arrive before response.created without its sequence.
+    if (["codex.response.metadata", "response.metadata", "responsesapi.websocket_timing"].includes(type)) continue;
     if (data.sequence_number !== undefined) {
       const sequence = integer(data.sequence_number);
       if (sequence <= lastSequence) invalid("The upstream reused or reordered an event sequence.");
@@ -111,7 +121,7 @@ export async function* responsesEvents(body: ReadableStream<Uint8Array>): AsyncG
       if (Array.from(items.values()).some((item) => item.id === id)) invalid();
       if (raw.type === "message") {
         if (raw.role !== "assistant" || !Array.isArray(raw.content) || raw.content.length) invalid();
-        items.set(outputIndex, { type: "message", id, done: false, parts: new Map() });
+        items.set(outputIndex, { type: "message", id, done: false, parts: new Map(), phase: phase(raw.phase) });
       } else if (raw.type === "function_call") {
         const item: OutputItem = { type: "function_call", id, done: false, index: nextBlock++,
           callId: identifier(raw.call_id), name: identifier(raw.name), arguments: text(raw.arguments), argumentsDone: false };
@@ -126,7 +136,7 @@ export async function* responsesEvents(body: ReadableStream<Uint8Array>): AsyncG
       if (raw.type !== "output_text") invalid("The upstream returned unsupported Responses content.");
       const part = { index: nextBlock++, text: text(raw.text), textDone: false, done: false };
       item.parts.set(contentIndex, part);
-      yield { type: "text_start", index: part.index };
+      yield { type: "text_start", index: part.index, ...(item.phase !== undefined ? { phase: item.phase } : {}) };
       if (part.text) yield { type: "text_delta", index: part.index, text: part.text };
     } else if (type === "response.output_text.delta") {
       const part = partFor(data);
@@ -141,7 +151,6 @@ export async function* responsesEvents(body: ReadableStream<Uint8Array>): AsyncG
       const part = partFor(data); const raw = record(data.part);
       if (!part.textDone || raw.type !== "output_text" || raw.text !== part.text) invalid();
       part.done = true;
-      yield { type: "block_stop", index: part.index };
     } else if (type === "response.function_call_arguments.delta") {
       const item = itemFor(data);
       if (item.type !== "function_call" || item.argumentsDone) invalid();
@@ -155,8 +164,20 @@ export async function* responsesEvents(body: ReadableStream<Uint8Array>): AsyncG
     } else if (type === "response.output_item.done") {
       const item = items.get(integer(data.output_index));
       if (!item || item.done) invalid();
-      validateSnapshot(item, record(data.item));
+      const snapshot = record(data.item);
+      if (item.type === "message" && snapshot.phase !== undefined) {
+        const finalPhase = phase(snapshot.phase);
+        if (item.phase !== undefined && item.phase !== null && finalPhase !== item.phase) invalid();
+        item.phase = finalPhase;
+      }
+      validateSnapshot(item, snapshot);
       if (item.type === "message" && Array.from(item.parts.values()).some((part) => !part.done)) invalid();
+      if (item.type === "message") {
+        // The finalized item may be the first event carrying its phase. Keep
+        // streaming text immediately, but close it only once that metadata exists.
+        for (const part of item.parts.values()) yield { type: "block_stop", index: part.index,
+          ...(item.phase !== undefined ? { phase: item.phase } : {}) };
+      }
       if (item.type === "function_call") {
         if (!item.argumentsDone) invalid();
         yield { type: "block_stop", index: item.index };

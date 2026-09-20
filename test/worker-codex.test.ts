@@ -491,6 +491,9 @@ describe("direct Codex generation from the Worker", () => {
     const upstream = mocked.requests.find(request => request.url === endpoint.responses)!;
     expect(upstream.headers.get("authorization")).toBe(`Bearer ${mocked.originalAccessToken}`);
     expect(upstream.headers.get("chatgpt-account-id")).toBe("chatgpt-test-account");
+    expect(upstream.headers.get("originator")).toBe("codex_cli_rs");
+    expect(upstream.headers.get("user-agent")).toBe("codex_cli_rs/0.154.0 (Cloudflare Workers; ai-proxy)");
+    expect(upstream.headers.has("openai-beta")).toBe(false);
     expect(upstream.headers.has("cookie")).toBe(false);
     expect(upstream.redirect).toBe("manual");
     const upstreamBody = await upstream.json<Record<string, unknown>>();
@@ -707,6 +710,47 @@ describe("direct Codex generation from the Worker", () => {
     expect(await response.text()).not.toContain("private quota detail");
     expect(mocked.requests.filter(request => request.url === endpoint.responses)).toHaveLength(1);
     expect(mocked.requests.filter(request => request.url === endpoint.token)).toHaveLength(1);
+  });
+
+  it("classifies a browser challenge without refreshing, retrying, or logging provider content", async () => {
+    const logs = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const mocked = mockCodex({ generation: () => new Response("<html>private challenge cookie and token</html>", {
+      status: 403, headers: { "content-type": "text/html; charset=UTF-8", server: "cloudflare", "cf-mitigated": "challenge", "cf-ray": "0123456789abcdef-SJC" },
+    }) });
+    await connectCodex();
+    const response = await generate();
+    expect(response.status).toBe(502);
+    expect(await response.json()).toMatchObject({ error: { code: "codex_upstream_challenge" } });
+    expect(logs.mock.calls).toEqual([[JSON.stringify({ code: "codex_upstream_rejected", operation: "responses", upstreamStatus: 403,
+      contentType: "text/html", server: "cloudflare", challenge: true, upstreamCode: "unknown", cfRay: "0123456789abcdef-SJC" })]]);
+    expect(mocked.requests.filter(request => request.url === endpoint.responses)).toHaveLength(1);
+    expect(mocked.requests.filter(request => request.url === endpoint.token)).toHaveLength(1);
+    expect(await (await call("/api/admin/codex", { headers: browserHeaders() })).json()).toMatchObject({ connected: true, needsReconnect: false });
+    expect((await env.DB.prepare("SELECT count(*) AS count FROM codex_request").first<{ count: number }>())?.count).toBe(0);
+  });
+
+  it("classifies a known regional rejection using only its allowlisted code", async () => {
+    const logs = vi.spyOn(console, "warn").mockImplementation(() => {});
+    mockCodex({ generation: () => Response.json({ error: { code: "unsupported_country_region_territory", message: "private account info" } }, { status: 403 }) });
+    await connectCodex();
+    const response = await generate();
+    expect(await response.json()).toMatchObject({ error: { code: "codex_upstream_region_restricted" } });
+    expect(JSON.parse(String(logs.mock.calls[0]?.[0]))).toMatchObject({ upstreamCode: "unsupported_country_region_territory", contentType: "application/json" });
+    expect(JSON.stringify(logs.mock.calls)).not.toContain("private account info");
+  });
+
+  it("does not expose arbitrary error codes, headers, or an oversized error body", async () => {
+    const logs = vi.spyOn(console, "warn").mockImplementation(() => {});
+    mockCodex({ generation: (_request, count) => Response.json({ error: { code: count === 1 ? "private-secret-code" : "permission_denied", message: "private prompt".repeat(count === 1 ? 1 : 2000) } }, {
+      status: 403, headers: { server: "private-header", "cf-ray": "private-header", "cf-mitigated": "private-header" },
+    }) });
+    await connectCodex();
+    for (let i = 0; i < 2; i++) {
+      const response = await generate();
+      expect(await response.json()).toMatchObject({ error: { code: "codex_upstream_forbidden" } });
+    }
+    expect(logs.mock.calls.map(call => JSON.parse(String(call[0])).upstreamCode)).toEqual(["unknown", "unknown"]);
+    expect(JSON.stringify(logs.mock.calls)).not.toContain("private");
   });
 
   it("does not follow redirects with ChatGPT credentials", async () => {

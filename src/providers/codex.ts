@@ -1,3 +1,4 @@
+import { CLIENT_USER_AGENT, codexRejection } from "../codex/http";
 import { acquireCodexSlot, codexCredentials, markConnectionRejected } from "../codex/connection";
 import { ApiError } from "../core/errors";
 import type { Event, GenerationRequest, JsonObject } from "../core/types";
@@ -62,6 +63,7 @@ export function createCodexProvider(env: AppEnv, ctx: ExecutionContext): Provide
       const send = () => fetch("https://chatgpt.com/backend-api/codex/responses", {
         method: "POST", redirect: "manual", signal,
         headers: { "content-type": "application/json", accept: "text/event-stream",
+          originator: "codex_cli_rs", "user-agent": CLIENT_USER_AGENT,
           authorization: `Bearer ${credentials.tokens.accessToken}`, "ChatGPT-Account-ID": credentials.tokens.accountId }, body,
       });
       let response = await send();
@@ -72,13 +74,12 @@ export function createCodexProvider(env: AppEnv, ctx: ExecutionContext): Provide
         response = await send();
       }
       if (!response.ok) {
-        await response.body?.cancel();
         if (response.status === 401) {
+          await response.body?.cancel();
           await markConnectionRejected(env, credentials.version);
           throw new ApiError(503, "ChatGPT needs to be reconnected by the owner.", "codex_reauthentication_required");
         }
-        throw new ApiError(response.status === 429 ? 429 : 502, `Codex returned HTTP ${response.status}.`,
-          response.status === 429 ? "rate_limit_error" : "api_error", response.headers.get("retry-after") ?? undefined);
+        throw await codexRejection(response, signal, "responses");
       }
       if (!response.body || !response.headers.get("content-type")?.includes("text/event-stream")) {
         await response.body?.cancel(); throw new ApiError(502, "Codex did not return an event stream.", "api_error");

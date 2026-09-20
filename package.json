@@ -15,10 +15,12 @@
     "test:codex": "npm run build && node tools/smoke-codex.mjs && node tools/smoke-codex.mjs --responses && node tools/smoke-codex.mjs --codex-worker",
     "db:generate": "drizzle-kit generate",
     "auth:generate": "npx auth@1.7.5 generate --config ./tools/auth-schema.ts --output ./src/db/schema.ts --yes",
-    "check": "npm run typecheck && npm test && npm run build",
+    "check": "npm run typecheck && npm test && npm run test:client && npm run build",
     "build": "wrangler deploy --env \"\" --dry-run --outdir dist",
     "db:migrate": "wrangler d1 migrations apply ai-proxy --local",
-    "deploy": "wrangler deploy --env production"
+    "deploy": "wrangler deploy --env production",
+    "test:client": "node --test test/client-models.test.mjs",
+    "test:docker": "node tools/test-docker.mjs"
   },
   "overrides": {
     "@esbuild-kit/core-utils": {

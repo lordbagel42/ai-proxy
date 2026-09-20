@@ -26,6 +26,11 @@ async function api(path, method = 'GET', body, signal) {
   if (!response.ok) throw Object.assign(new Error(data?.error?.message || data?.message || `Request failed (${response.status})`), { status: response.status });
   return data;
 }
+async function refreshModels() {
+  try { const catalog = await api('/api/models'); if (profile) profile.modelCatalogError = ''; $('models').textContent = catalog.data.map((m) => m.id).join(', ') || 'No models available.'; }
+  catch (error) { if (profile) profile.modelCatalogError = error.message; $('models').textContent = error.message; }
+  if (chatgptState && !chatgptState.pending) renderChatgpt(chatgptState);
+}
 async function busy(button, work) {
   button.disabled = true; notice('');
   try { await work(); } catch (error) { notice(error.message); } finally { button.disabled = false; }
@@ -69,13 +74,15 @@ function renderChatgpt(state) {
   const pending = state.pending;
   const browser = pending?.kind === 'browser';
   if (!browser || previous?.authorizationUrl !== pending.authorizationUrl) $('chatgpt-callback').value = '';
-  $('chatgpt-status').textContent = state.needsReconnect ? 'Sign-in needed' : state.connected ? 'Connected' : 'Not connected';
-  $('chatgpt-status').classList.toggle('is-connected', state.connected && !state.needsReconnect);
+  const unavailable = state.connected && !state.needsReconnect && Boolean(profile.modelCatalogError);
+  $('chatgpt-status').textContent = unavailable ? 'Upstream unavailable' : state.needsReconnect ? 'Sign-in needed' : state.connected ? 'Connected' : 'Not connected';
+  $('chatgpt-status').classList.toggle('is-connected', state.connected && !state.needsReconnect && !unavailable);
   $('chatgpt-description').textContent = pending
     ? 'Finish signing in to connect your ChatGPT account.'
+    : unavailable ? `ChatGPT is signed in. ${profile.modelCatalogError}`
     : state.needsReconnect ? 'Sign in again to keep your circle connected.'
-    : state.connected ? 'Your circle can use the Codex model with their own keys.'
-    : 'Connect your ChatGPT account to enable the Codex model for your circle.';
+    : state.connected ? 'Your circle can use your available Codex models with their own keys.'
+    : 'Connect your ChatGPT account to enable your Codex models for your circle.';
   $('chatgpt-connect').textContent = pending ? 'Generate a new sign-in link ↗' : 'Generate sign-in link ↗';
   $('chatgpt-connect').hidden = false;
   for (const id of ['chatgpt-connect', 'chatgpt-device', 'chatgpt-browser-complete', 'chatgpt-disconnect']) $(id).disabled = false;
@@ -102,6 +109,7 @@ async function updateChatgpt(path = '/api/admin/codex', method = 'GET', body) {
     const result = await api(path, method, body, chatgptController.signal);
     if (version !== chatgptVersion) return;
     renderChatgpt(result || { connected: false, expiresAt: null, needsReconnect: false, pending: null });
+    if (method !== 'GET' && !result?.pending) void refreshModels();
     if (method === 'DELETE') chatgptMessage('ChatGPT disconnected. You can connect again whenever you’re ready.');
   } catch (error) {
     if (version !== chatgptVersion || error.name === 'AbortError') return;
@@ -144,7 +152,7 @@ async function refresh() {
     window.FriendsAnalytics?.mount();
     $('user-name').textContent = profile.user.name; $('user-email').textContent = profile.user.email;
     $('usage').textContent = new Intl.NumberFormat().format(profile.usage.requestsToday);
-    $('models').textContent = profile.models.map((m) => m.id).join(', ');
+    $('models').textContent = profile.modelCatalogError || profile.models.map((m) => m.id).join(', ') || 'No models available.';
     $('base-url').textContent = profile.baseUrl;
     $('cli-example').textContent = `npm run client -- login \\\n  --url ${new URL(profile.baseUrl).origin}\n\nnpm run client -- codex`;
     $('key-count').textContent = `${profile.keys.length} ACTIVE`;

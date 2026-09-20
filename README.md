@@ -2,7 +2,7 @@
 
 A private AI gateway running entirely in a Cloudflare Worker, with Hack Club sign-in, Better Auth sessions, personal API keys, and native Codex CLI support. The Worker connects directly to ChatGPT and other configured providers.
 
-**Deployment:** [relay.raygen.dev](https://relay.raygen.dev). The owner's ChatGPT account still needs to be connected from the dashboard before Codex requests can succeed. Protocol conversion and native Codex tool calls are tested against mock upstreams; live subscription inference has not been verified.
+**Deployment:** [relay.raygen.dev](https://relay.raygen.dev). The owner has connected ChatGPT, but live testing on September 19, 2026 found that ChatGPT returns an HTML HTTP 403 to this Worker’s subscription requests. Live inference is blocked. Account model discovery, native CLI metadata, and protocol handling are implemented and tested against controlled upstreams; the dashboard reports upstream unavailability rather than inventing a model list. See [the integration report](docs/integration-check.md).
 
 ## Connect ChatGPT
 
@@ -54,7 +54,7 @@ The Codex backend uses fixed OpenAI authentication endpoints and `https://chatgp
 
 | Endpoint | Supported behavior |
 | --- | --- |
-| `GET /v1/models` | Configured model aliases |
+| `GET /v1/models` | Account model catalog and configured provider aliases |
 | `POST /v1/messages` | Anthropic-style text, images, client tools, tool results, SSE |
 | `POST /v1/chat/completions` | OpenAI-style chat, images, client tools, tool results, SSE |
 | `POST /v1/responses` | Stateless Responses API, streamed text and tools, Codex tool namespaces and custom tools |
@@ -96,7 +96,8 @@ npm run client -- codex
 The helper launches the **installed native Codex executable** with a Responses provider and injects your personal proxy key. It does not replace Codex or modify your existing Codex configuration or authentication. Other Codex arguments pass through:
 
 ```sh
-npm run client -- codex --model codex exec 'Explain this project'
+npm run client -- models
+npm run client -- codex --model MODEL_ID exec 'Explain this project'
 npm run client -- logout
 ```
 
@@ -105,7 +106,7 @@ Login stores the key in `~/.config/ai-proxy/credentials.json` (or under `XDG_CON
 To configure Codex yourself, add this to your user-level Codex config and supply your proxy key through the environment:
 
 ```toml
-model = "codex"
+model = "MODEL_ID_FROM_THE_GATEWAY"
 model_provider = "friends_proxy"
 web_search = "disabled"
 
@@ -121,7 +122,7 @@ export AI_PROXY_API_KEY="$(node /absolute/path/to/ai-proxy/bin/ai-proxy.mjs toke
 codex
 ```
 
-The project's login helper authenticates friends with Hack Club. The dashboard's **Connect ChatGPT** action authenticates the shared upstream account. Current Codex versions may display a fallback-model-metadata notice for custom aliases. The proxy returns the standard OpenAI model list plus an empty Codex-specific catalog, so it does not claim unverified provider context windows or reasoning capabilities. See [Codex custom providers](https://learn.chatgpt.com/docs/config-file/config-advanced#custom-model-providers).
+The project's login helper authenticates friends with Hack Club. The dashboard's **Connect ChatGPT** action authenticates the shared upstream account. The helper fetches the connected account’s actual model catalog, selects its default model, and supplies the native metadata through a temporary `model_catalog_json` file. The model picker therefore uses the account’s names, reasoning levels, and context windows. The file is removed when Codex exits. Manual configuration without this catalog may use Codex’s built-in model metadata instead. See [Codex custom providers](https://learn.chatgpt.com/docs/config-file/config-advanced#custom-model-providers).
 
 ## Local development
 
@@ -154,12 +155,13 @@ The production Codex configuration is:
   {
     "id": "codex",
     "protocol": "codex",
-    "models": { "codex": "gpt-5.6-terra" }
+    "discoverModels": true,
+    "models": {}
   }
 ]
 ```
 
-Codex obtains its credentials from the encrypted owner connection. Its upstream URL and authentication settings are fixed in the adapter.
+With `discoverModels: true`, the gateway fetches the connected account’s catalog and caches it in D1 for five minutes, fenced to the owner and connection version. Both `/api/models` (browser session) and `/v1/models` (gateway key) return the real model IDs. Optional `models` aliases remain supported; the old `codex` name resolves to the current default for existing clients but is not advertised as a model. Codex obtains its credentials from the encrypted owner connection. Its upstream URL and authentication settings are fixed in the adapter.
 
 API-key providers additionally specify a fixed base URL, a secret binding name, and optional authentication style. Configuration contains **no secret values**. For example, add these entries alongside Codex:
 
@@ -228,16 +230,16 @@ Worker invocation logs and traces are enabled with 100% sampling in `wrangler.js
 - Conversations are stateless. Send complete history and `store: false`; `previous_response_id`, stored conversations, and background responses are rejected.
 - Tool execution happens in the client. Codex namespaces are mapped to stable upstream names and restored in replies. Custom tools use a JSON string wrapper upstream; grammar constraints are described to the model rather than enforced by a grammar engine.
 - The adapters cover text, image inputs, and client tools. Audio, files/documents, provider-hosted tools, structured outputs, token-count endpoints, realtime/WebSockets, and Responses compaction are not implemented.
-- Codex subscription requests always stream upstream and disable storage. Sampling controls and stop sequences are rejected. The adapter omits `max_output_tokens`, so caller-requested output-token limits are not enforced for this backend. Assistant message phase metadata is also omitted, which may affect multi-step behavior on newer Codex models.
-- Reasoning contents and encrypted reasoning are not retained or replayed. Requested thinking configuration is rejected for Anthropic inputs. OpenAI reasoning hints, cache-control hints, and other provider-specific metadata are not forwarded. This is a supported subset of the protocols, not a complete API clone.
+- Codex subscription requests always stream upstream and disable storage. Sampling controls and stop sequences are rejected. The adapter omits `max_output_tokens`, so caller-requested output-token limits are not enforced for this backend. Assistant message phase is preserved through Responses input, output, and conversation replay.
+- Reasoning contents and encrypted reasoning are not retained or replayed. Requested thinking configuration is rejected for Anthropic inputs. Responses reasoning effort, summary, and context are validated and forwarded to compatible providers. Cache-control hints and other provider-specific metadata are not forwarded. This is a supported subset of the protocols, not a complete API clone.
 - Request bodies are limited to 1 MiB, generated content to 2 MiB, and requested output to 32,768 tokens for upstreams that support token caps. Requests time out after five minutes. A client disconnect cancels its upstream request. The Codex adapter retries once after an authentication rejection and token refresh, before generated content; generation failures are not automatically retried.
 - All approved users can access every configured alias. Analytics record attempts and provider-reported tokens. There is no billing, per-model entitlement system, account pool, or automatic failover.
-- Live ChatGPT subscription inference remains an account connection and deployment check. Credentials are provisioned privately and are not included in source control.
+- Live ChatGPT subscription inference currently fails with an upstream HTML 403 from this Worker. Successful OAuth sign-in does not establish inference availability. Credentials are provisioned privately and are not included in source control.
 
 ## Development and verification
 
 ```sh
-npm run check        # TypeScript + unit/Worker integration tests + deploy dry run
+npm run check        # TypeScript + unit/Worker/client tests + deploy dry run
 npm run test:codex   # Native Codex against Anthropic, Responses, and direct Worker mocks
 npm run types       # Regenerate Workers bindings and runtime types
 npm run auth:generate
@@ -247,3 +249,12 @@ npm run db:generate  # Generate a migration after schema changes
 Tests cover owner authorization, encrypted ChatGPT credential storage and refresh, browser PKCE and device login, analytics aggregation and cancellation tracking, upstream Responses lifecycle validation, Hack Club's mocked OAuth callback, Better Auth sessions in D1, CSRF checks, key hashing and revocation, allowlist removal, concurrent rate limits, one-time CLI approval, protocol conversion, UTF-8 SSE fragmentation, tools, and stream failure and cancellation.
 
 The Codex smoke test creates an ephemeral database and temporary working directory, runs a harmless shell tool, checks that its result arrives on the next request, and verifies the final streamed answer. It makes no model-provider requests.
+
+Live integration testing runs the native Codex CLI in an isolated Docker container against an already deployed gateway:
+
+```sh
+npm run test:docker -- --live --url https://relay.raygen.dev \
+  --key-file /absolute/path/to/a/temporary-proxy-key
+```
+
+The key file must contain a gateway key, not a ChatGPT token. The container receives it as a read-only runtime mount, has a temporary home/workspace, and never mounts host Codex credentials. This test makes real requests: streaming and buffered calls through all three protocols, native model discovery, and a Codex shell tool write/read round trip. It fails on upstream rejection, missing usage, stream failures, a mismatched model list, or missing tool execution. Revoke the temporary key afterward.

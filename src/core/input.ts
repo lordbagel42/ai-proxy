@@ -111,6 +111,13 @@ const common = z.object({
   temperature: z.number().min(0).max(2).optional(), top_p: z.number().min(0).max(1).optional(),
   parallel_tool_calls: z.boolean().optional(),
 });
+const reasoning = z.object({
+  // Codex catalogs can advertise new, model-defined effort levels.
+  effort: z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/).optional(),
+  summary: z.enum(["auto", "concise", "detailed", "none"]).optional(),
+  context: z.enum(["auto", "current_turn", "all_turns"]).optional(),
+}).strict();
+const messagePhase = z.enum(["commentary", "final_answer"]).nullable();
 
 export function parseRequest(raw: unknown, protocol: Protocol): GenerationRequest {
   const body = object(raw, "request");
@@ -132,6 +139,12 @@ export function parseRequest(raw: unknown, protocol: Protocol): GenerationReques
     maxTokens, system: "", messages: [], tools: tools(body.tools, protocol),
     toolChoice: choice(body.tool_choice, protocol), parallelTools: base.parallel_tool_calls,
   };
+  if (body.reasoning !== undefined && body.reasoning !== null) {
+    if (protocol !== "responses") invalid("reasoning controls require the Responses API.");
+    const parsed = reasoning.safeParse(body.reasoning);
+    if (!parsed.success) invalid("reasoning must contain supported effort, summary, or context controls.");
+    result.reasoning = parsed.data;
+  }
   if (body.stop !== undefined || body.stop_sequences !== undefined) {
     const stop = body.stop ?? body.stop_sequences;
     result.stop = typeof stop === "string" ? [stop] : array(stop, "stop").map((v) => string(v));
@@ -158,6 +171,9 @@ export function parseRequest(raw: unknown, protocol: Protocol): GenerationReques
         result.messages.push({ role: "user", content: [{ type: "result", id: string(m.call_id), content: textContent(m.output) }] });
         continue;
       }
+      if (m.phase !== undefined && (protocol !== "responses" || m.role !== "assistant" || !messagePhase.safeParse(m.phase).success)) {
+        invalid("phase must be commentary, final_answer, or null on an assistant Responses message.");
+      }
       if (m.role === "system" || m.role === "developer") { systems.push(textContent(m.content)); continue; }
       if (m.role === "tool") {
         result.messages.push({ role: "user", content: [{ type: "result", id: string(m.tool_call_id), content: textContent(m.content) }] }); continue;
@@ -173,7 +189,7 @@ export function parseRequest(raw: unknown, protocol: Protocol): GenerationReques
       if (parts.some((p) => p.type === "call") && m.role !== "assistant") invalid("Tool calls must have the assistant role.");
       if (parts.some((p) => p.type === "result") && m.role !== "user") invalid("Tool results must have the user role.");
       if (!parts.length) invalid("Messages must contain content or tool calls.");
-      result.messages.push({ role: m.role, content: parts });
+      result.messages.push({ role: m.role, content: parts, ...(m.phase !== undefined ? { phase: messagePhase.parse(m.phase) } : {}) });
     }
   }
   if (!result.messages.length) invalid("At least one conversation message is required.");
@@ -181,7 +197,7 @@ export function parseRequest(raw: unknown, protocol: Protocol): GenerationReques
   // Anthropic requires consecutive same-role content to be in one message, in order.
   result.messages = result.messages.reduce<Message[]>((messages, m) => {
     const last = messages.at(-1);
-    if (last?.role === m.role) last.content.push(...m.content); else messages.push(m);
+    if (last?.role === m.role && last.phase === m.phase) last.content.push(...m.content); else messages.push(m);
     return messages;
   }, []);
   return result;

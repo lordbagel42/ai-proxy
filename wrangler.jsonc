@@ -36,7 +36,7 @@
     "BETTER_AUTH_URL": "http://localhost:8787",
     "ALLOWED_HACKCLUB_IDS": "",
     "REQUESTS_PER_MINUTE": "20",
-    "PROVIDERS_JSON": "[{\"id\":\"codex\",\"protocol\":\"codex\",\"models\":{\"codex\":\"gpt-5.6-terra\"}}]",
+    "PROVIDERS_JSON": "[{\"id\":\"codex\",\"protocol\":\"codex\",\"discoverModels\":true,\"models\":{}}]",
     "OWNER_HACKCLUB_ID": "ident!R9zf0a"
   },
   "triggers": {
@@ -62,7 +62,7 @@
         "BETTER_AUTH_URL": "https://relay.raygen.dev",
         "ALLOWED_HACKCLUB_IDS": "ident!R9zf0a",
         "REQUESTS_PER_MINUTE": "20",
-        "PROVIDERS_JSON": "[{\"id\":\"codex\",\"protocol\":\"codex\",\"models\":{\"codex\":\"gpt-5.6-terra\"}}]",
+        "PROVIDERS_JSON": "[{\"id\":\"codex\",\"protocol\":\"codex\",\"discoverModels\":true,\"models\":{}}]",
         "OWNER_HACKCLUB_ID": "ident!R9zf0a"
       },
       "routes": [

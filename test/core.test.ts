@@ -35,10 +35,32 @@ describe("conversation translation", () => {
     ] }] }, "anthropic");
     expect(parsed.messages[0]?.content).toEqual([{ type: "image", url: "data:image/png;base64,abc" }, { type: "result", id: "tool_1", content: "ok", isError: false }]);
   });
+  it("preserves distinct assistant phases when reconstructing Responses history", () => {
+    const parsed = parseRequest({ model: "codex", input: [
+      { role: "user", content: "Read the file." },
+      { type: "message", role: "assistant", phase: "commentary", content: [{ type: "output_text", text: "Reading it now." }] },
+      { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: "It contains the result." }] },
+      { type: "message", role: "assistant", phase: null, content: [{ type: "output_text", text: "Legacy phase." }] },
+    ] }, "responses");
+    expect(parsed.messages).toHaveLength(4);
+    expect(parsed.messages.map((message) => message.phase)).toEqual([undefined, "commentary", "final_answer", null]);
+  });
+  it("accepts validated Responses reasoning controls, including model-defined efforts", () => {
+    const reasoning = { effort: "ultra", summary: "detailed", context: "current_turn" };
+    expect(parseRequest({ model: "codex", input: "Hello", reasoning }, "responses").reasoning).toEqual(reasoning);
+    expect(parseRequest({ model: "codex", input: "Hello", reasoning: { effort: "future_level" } }, "responses").reasoning)
+      .toEqual({ effort: "future_level" });
+    expect(() => parseRequest({ model: "codex", messages: [{ role: "user", content: "Hello" }], reasoning }, "chat"))
+      .toThrow("require the Responses API");
+  });
   it.each([
     { previous_response_id: "old" }, { store: true }, { background: true }, { max_output_tokens: 999999 },
     { tools: [{ type: "web_search" }] }, { response_format: { type: "json_object" } },
     { input: [{ type: "function_call", name: "x", call_id: "1", arguments: "oops" }] },
+    { reasoning: { effort: 2 } }, { reasoning: { effort: "" } }, { reasoning: { summary: "verbose" } },
+    { reasoning: { effort: "high", budget_tokens: 100 } }, { reasoning: { context: "arbitrary" } },
+    { input: [{ role: "assistant", phase: "analysis", content: "Hidden" }] },
+    { input: [{ role: "user", phase: "final_answer", content: "Hello" }] },
   ])("rejects unsupported requests before contacting an upstream: %j", (bad) => {
     expect(() => parseRequest({ model: "claude", input: "hello", ...bad }, "responses")).toThrow();
   });

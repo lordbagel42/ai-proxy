@@ -29,6 +29,12 @@ export const codexRequest = sqliteTable("codex_request", {
   id: text("id").primaryKey(), expiresAt: integer("expires_at").notNull(),
 }, (t) => [index("codex_request_expiry").on(t.expiresAt)]);
 
+export const codexModelCache = sqliteTable("codex_model_cache", {
+  id: text("id").primaryKey(), ownerIdentity: text("owner_identity").notNull(),
+  connectionVersion: integer("connection_version").notNull(), catalog: text("catalog").notNull(),
+  fetchedAt: integer("fetched_at").notNull(), expiresAt: integer("expires_at").notNull(),
+});
+
 export const proxyMember = sqliteTable("proxy_member", {
   identityId: text("identity_id").primaryKey(), status: text("status", { enum: ["active", "suspended"] }).notNull().default("active"),
   label: text("label").notNull().default(""), dailyLimit: integer("daily_limit"),

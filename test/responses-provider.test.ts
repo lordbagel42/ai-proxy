@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { collect, encodeStream } from "../src/core/output";
-import { sse } from "../src/core/sse";
+import { parseRequest } from "../src/core/input";
+import { collect, encodeStream, formatCompletion } from "../src/core/output";
+import { readSSE, sse } from "../src/core/sse";
 import type { GenerationRequest, JsonObject } from "../src/core/types";
 import { responsesBody, responsesEvents } from "../src/providers/responses";
 import { bytes } from "./fixtures";
@@ -58,6 +59,22 @@ describe("Responses upstream request", () => {
   it("rejects unsupported stop sequences instead of dropping them", () => {
     expect(() => responsesBody({ ...request(), stop: ["END"] }, "codex")).toThrow("stop sequences");
   });
+  it("forwards reasoning settings and assistant phases to the Responses backend", () => {
+    const r = parseRequest({ model: "codex", reasoning: { effort: "high", summary: "concise", context: "all_turns" }, input: [
+      { role: "assistant", phase: "commentary", content: "Checking." },
+      { role: "assistant", phase: "final_answer", content: "Finished." },
+      { role: "user", content: "Continue." },
+    ] }, "responses");
+    expect(responsesBody(r, "real-model")).toMatchObject({
+      reasoning: { effort: "high", summary: "concise", context: "all_turns" },
+      input: [
+        { role: "assistant", phase: "commentary" },
+        { role: "assistant", phase: "final_answer" },
+        { role: "user" },
+      ],
+    });
+    expect((responsesBody(r, "real-model").input as JsonObject[])[2]).not.toHaveProperty("phase");
+  });
 });
 
 describe("Responses upstream stream", () => {
@@ -71,6 +88,49 @@ describe("Responses upstream stream", () => {
     const result = await collect(responsesEvents(stream(fixture(true))), request());
     expect(result.blocks).toEqual([{ type: "tool", id: "call_read", name: "read_file", arguments: '{"path":"README.md"}' }]);
     expect(result.reason).toBe("tool_calls");
+  });
+  it("tolerates Codex transport metadata before and during an otherwise validated stream", async () => {
+    const events = fixture();
+    events.unshift({ type: "codex.response.metadata", metadata: { routing: "test" } });
+    events.splice(4, 0, { type: "response.metadata", metadata: { safety_buffering: { type: "disabled" } } });
+    events.splice(-1, 0, { type: "responsesapi.websocket_timing", timings: { queue_ms: 1 } });
+    expect((await collect(responsesEvents(stream(events)), request())).blocks).toEqual([{ type: "text", text: "Hello 🌱" }]);
+  });
+  it("preserves phases supplied only on finalized items through streaming and replay", async () => {
+    const first = fixture(); const second = fixture();
+    for (const event of second) {
+      if (event.output_index !== undefined) event.output_index = 1;
+      if (event.item_id !== undefined) event.item_id = "msg_final";
+      if (event.item) (event.item as JsonObject).id = "msg_final";
+    }
+    const firstItem = first.find((event) => event.type === "response.output_item.done")!.item as JsonObject;
+    firstItem.phase = "commentary";
+    const secondItem = second.find((event) => event.type === "response.output_item.done")!.item as JsonObject;
+    secondItem.phase = "final_answer";
+    (second.find((event) => event.type === "response.output_item.added")!.item as JsonObject).phase = null;
+    const completed = second.at(-1)!;
+    (completed.response as JsonObject).output = [firstItem, secondItem];
+    const events = [...first.slice(0, -1), ...second.slice(2, -1), completed];
+    const completion = await collect(responsesEvents(stream(events)), request());
+    expect(completion.blocks.map((block) => block.type === "text" && block.phase)).toEqual(["commentary", "final_answer"]);
+    const output = formatCompletion(completion, "responses", request()).output as JsonObject[];
+    const replay = parseRequest({ model: "codex", input: output }, "responses");
+    expect((responsesBody(replay, "codex").input as JsonObject[]).map((item) => item.phase)).toEqual(["commentary", "final_answer"]);
+    let encoded = "";
+    for await (const frame of encodeStream(responsesEvents(stream(events)), "responses", request())) encoded += frame;
+    const frames: JsonObject[] = [];
+    for await (const frame of readSSE(bytes(encoded))) frames.push(JSON.parse(frame.data));
+    expect(frames.filter((frame) => frame.type === "response.output_item.done").map((frame) => (frame.item as JsonObject).phase))
+      .toEqual(["commentary", "final_answer"]);
+    expect(((frames.at(-1)!.response as JsonObject).output as JsonObject[]).map((item) => item.phase)).toEqual(["commentary", "final_answer"]);
+  });
+  it("rejects unsupported content events and invalid assistant phases", async () => {
+    const events = fixture();
+    events.splice(4, 0, { type: "response.some_new_content.delta", delta: "Would be lost" });
+    await expect(collect(responsesEvents(stream(events)), request())).rejects.toThrow("unsupported Responses event");
+    const badPhase = fixture();
+    (badPhase.find((event) => event.type === "response.output_item.done")!.item as JsonObject).phase = "analysis";
+    await expect(collect(responsesEvents(stream(badPhase)), request())).rejects.toThrow("invalid assistant message phase");
   });
   it("reports max-output-token termination as length", async () => {
     expect((await collect(responsesEvents(stream(fixture(false, true))), request())).reason).toBe("length");

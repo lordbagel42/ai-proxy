@@ -1,10 +1,11 @@
 #!/usr/bin/env node
-import { mkdir, readFile, writeFile, chmod, rename, rm } from "node:fs/promises";
-import { homedir } from "node:os";
+import { mkdir, mkdtemp, readFile, writeFile, chmod, rename, rm } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { spawn } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 import { randomUUID } from "node:crypto";
+import { codexConfig, fetchModelCatalog, selectModel } from "./codex-models.mjs";
 
 const args = process.argv.slice(2);
 const command = args.shift();
@@ -66,20 +67,28 @@ try {
     console.error("Signed in. Run: npm run client -- codex");
   } else if (command === "codex") {
     const saved = await credentials();
-    const model = option("--model", "codex");
-    const config = {
-      model_provider: "friends_proxy", model,
-      "model_providers.friends_proxy.name": "Friends AI Proxy",
-      "model_providers.friends_proxy.base_url": `${saved.url}/v1`,
-      "model_providers.friends_proxy.env_key": "AI_PROXY_API_KEY",
-      "model_providers.friends_proxy.wire_api": "responses",
-      web_search: "disabled",
-    };
-    const overrides = Object.entries(config).flatMap(([key, value]) => ["-c", `${key}=${JSON.stringify(value)}`]);
-    // Append explicit overrides after user args so the selected endpoint and key cannot drift apart.
-    const child = spawn("codex", [...args.filter((a) => a !== "--"), ...overrides], { stdio: "inherit", env: { ...process.env, AI_PROXY_API_KEY: saved.key } });
-    child.on("error", (error) => { console.error(error.message); process.exitCode = 1; });
-    child.on("exit", (code) => { process.exitCode = code ?? 1; });
+    const catalog = await fetchModelCatalog(saved);
+    const model = selectModel(catalog, option("--model", option("-m")));
+    const temporary = await mkdtemp(join(tmpdir(), "ai-proxy-models-"));
+    try {
+      const catalogPath = catalog.models.length ? join(temporary, "models.json") : undefined;
+      if (catalogPath) await writeFile(catalogPath, JSON.stringify({ models: catalog.models }), { mode: 0o600 });
+      const overrides = Object.entries(codexConfig(saved.url, model, catalogPath)).flatMap(([key, value]) => ["-c", `${key}=${JSON.stringify(value)}`]);
+      // Per-process overrides preserve the user's global Codex config and authentication.
+      const child = spawn("codex", [...args.filter((a) => a !== "--"), ...overrides], { stdio: "inherit", env: { ...process.env, AI_PROXY_API_KEY: saved.key } });
+      const terminate = () => child.kill("SIGTERM");
+      process.once("SIGTERM", terminate);
+      try {
+        process.exitCode = await new Promise((resolve, reject) => {
+          child.once("error", reject);
+          child.once("exit", (code) => resolve(code ?? 1));
+        });
+      } finally { process.removeListener("SIGTERM", terminate); }
+    } finally { await rm(temporary, { recursive: true, force: true }); }
+  } else if (command === "models") {
+    const catalog = await fetchModelCatalog(await credentials());
+    const selected = selectModel(catalog);
+    for (const model of catalog.data) console.log(`${model.id}${model.id === selected ? " (default)" : ""}`);
   } else if (command === "token") {
     // Intended for Codex command-backed auth or explicit shell substitution.
     process.stdout.write((await credentials()).key + "\n");
@@ -90,7 +99,7 @@ try {
     await rm(credentialsPath);
     console.error("Signed out. The proxy key was revoked and removed from this machine.");
   } else {
-    console.log("Usage:\n  npm run client -- login --url https://your-proxy.example [--no-browser]\n  npm run client -- codex [--model codex] [Codex arguments]\n  npm run client -- token\n  npm run client -- logout");
+    console.log("Usage:\n  npm run client -- login --url https://your-proxy.example [--no-browser]\n  npm run client -- models\n  npm run client -- codex [--model MODEL] [Codex arguments]\n  npm run client -- token\n  npm run client -- logout");
     if (command && command !== "help") process.exitCode = 1;
   }
 } catch (error) {

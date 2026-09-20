@@ -11,12 +11,9 @@ import { collect, encodeStream, formatCompletion, streamResponse } from "./core/
 import { readJSON } from "./core/sse";
 import type { Protocol } from "./core/types";
 import type { AppEnv } from "./env";
-import { configuredProviders, createProvider } from "./providers";
+import { createProvider } from "./providers";
 import { createCodexProvider } from "./providers/codex";
-
-function models(env: AppEnv) {
-  return configuredProviders(env.PROVIDERS_JSON).flatMap((p) => Object.keys(p.models).map((id) => ({ id, object: "model", created: 0, owned_by: p.id })));
-}
+import { modelListing, resolveModel, type ModelListing } from "./models";
 
 function protocolFor(path: string): Protocol {
   return path.startsWith("/v1/messages") ? "anthropic" : path === "/v1/chat/completions" ? "chat" : "responses";
@@ -123,8 +120,16 @@ export async function route(request: Request, env: AppEnv, ctx: ExecutionContext
     const user = await sessionUser(request, env);
     const keys = await env.DB.prepare("SELECT id, name, key_prefix, created_at, expires_at, last_used_at FROM api_key WHERE user_id = ? AND revoked_at IS NULL AND expires_at > ? ORDER BY created_at DESC").bind(user.id, Date.now()).all();
     const usage = await personalUsage(env, user.id);
-    return Response.json({ user: { name: user.name, email: user.email }, isOwner: await isOwner(env, user.id), keys: keys.results, models: models(env),
+    let listing: ModelListing | undefined; let modelCatalogError: string | undefined;
+    try { listing = await modelListing(env, ctx, request.signal); }
+    catch (error) { modelCatalogError = publicError(error).message; }
+    return Response.json({ user: { name: user.name, email: user.email }, isOwner: await isOwner(env, user.id), keys: keys.results,
+      models: listing?.data ?? [], defaultModel: listing?.default_model ?? null, modelCatalogStatus: listing ? "ready" : "unavailable", modelCatalogError,
       usage: usage ?? { requestsToday: 0, totalTokensToday: 0 }, baseUrl: `${env.BETTER_AUTH_URL.replace(/\/$/, "")}/v1` });
+  }
+  if (path === "/api/models" && method === "GET") {
+    await sessionUser(request, env);
+    return Response.json(await modelListing(env, ctx, request.signal));
   }
   if (path === "/api/keys" && method === "POST") {
     sameOrigin(request, env); const user = await sessionUser(request, env);
@@ -143,14 +148,22 @@ export async function route(request: Request, env: AppEnv, ctx: ExecutionContext
   }
   if (path.startsWith("/v1/")) {
     const identity = await apiUser(request, env);
-    if (path === "/v1/models" && method === "GET") return Response.json({ object: "list", data: models(env), models: [] });
+    if (path === "/v1/models" && method === "GET") return Response.json(await modelListing(env, ctx, request.signal));
     if (!["/v1/messages", "/v1/chat/completions", "/v1/responses"].includes(path) || method !== "POST") {
       throw new ApiError(404, "Supported endpoints: /v1/models, /v1/messages, /v1/chat/completions, /v1/responses.", "not_found_error");
     }
     const protocol = protocolFor(path);
     const generation = parseRequest(await readJSON(request), protocol);
-    const config = configuredProviders(env.PROVIDERS_JSON).find((p) => Object.hasOwn(p.models, generation.model));
-    if (!config) throw new ApiError(400, "Unknown model. Use GET /v1/models to list available aliases.");
+    const { config, upstreamModel } = await resolveModel(env, ctx, generation.model, request.signal);
+    const reasoningRequested = generation.reasoning && (
+      (generation.reasoning.effort !== undefined && generation.reasoning.effort !== "none") ||
+      // Codex sends summary:auto even when fallback model metadata says none.
+      (generation.reasoning.summary !== undefined && !["none", "auto"].includes(generation.reasoning.summary)) ||
+      generation.reasoning.context !== undefined
+    );
+    if (reasoningRequested && (config.protocol === "anthropic" || config.protocol === "openai-chat")) {
+      throw new ApiError(400, "Reasoning controls require a Responses-compatible provider.");
+    }
     let credential = "";
     if (config.protocol !== "codex") {
       const value: unknown = Reflect.get(env, config.credential);
@@ -164,7 +177,7 @@ export async function route(request: Request, env: AppEnv, ctx: ExecutionContext
     const usage = new GenerationUsage(env, ctx, identity.userId, generation.model, config.id, protocol, lifecycle);
     try {
       const provider = config.protocol === "codex" ? createCodexProvider(env, ctx) : createProvider(config, credential);
-      const events = usage.observe(await provider.open(generation, config.models[generation.model]!, signal));
+      const events = usage.observe(await provider.open(generation, upstreamModel, signal));
       ctx.waitUntil(env.DB.prepare("UPDATE api_key SET last_used_at = ? WHERE id = ?").bind(Date.now(), identity.keyId).run().then(() => {}));
       if (generation.stream) return streamResponse(encodeStream(events, protocol, generation, () => usage.finish("error")), controller, {
         complete: () => usage.finish("success"), cancel: () => usage.finish("cancelled"), error: () => usage.finish("error"),
