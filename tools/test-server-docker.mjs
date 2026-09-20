@@ -133,6 +133,12 @@ try {
       const anthropic = request.url === '/anthropic/messages';
       assert.ok(anthropic || codex || request.url === '/responses/responses');
       assert.equal(body.model, anthropic ? 'upstream-anthropic' : codex ? 'upstream-codex' : 'upstream-responses');
+      if (!anthropic) {
+        const assistant = body.input.find(item => item.role === 'assistant');
+        assert.deepEqual(assistant?.content, [{ type: 'output_text', text: 'Synthetic prior assistant reply' }],
+          'Responses providers require output_text for replayed assistant history');
+        assert.ok(body.input.filter(item => item.role === 'user').every(item => item.content.every(part => part.type === 'input_text')));
+      }
       if (codex) {
         assert.equal(request.headers['chatgpt-account-id'], codexAccountId);
         assert.equal(request.headers.originator, 'codex_cli_rs');
@@ -267,8 +273,10 @@ globalThis.fetch = (input, init) => {
     if (model === 'fixture-codex') assert.equal(upstreamRequests, 12, 'preserve the original twelve generic provider cases');
     for (const endpoint of ['messages', 'chat/completions', 'responses']) {
       for (const stream of [false, true]) {
-        const content = endpoint === 'responses' ? { input: 'Synthetic Docker integration prompt' }
-          : { messages: [{ role: 'user', content: 'Synthetic Docker integration prompt' }], max_tokens: 100 };
+        const history = [{ role: 'user', content: 'Synthetic prior prompt' },
+          { role: 'assistant', content: 'Synthetic prior assistant reply' },
+          { role: 'user', content: 'Synthetic Docker integration prompt' }];
+        const content = endpoint === 'responses' ? { input: history } : { messages: history, max_tokens: 100 };
         const response = await fetchApp(`/v1/${endpoint}`, { method: 'POST', headers: keyHeaders, body: JSON.stringify({ model, stream, ...content }) });
         assert.equal(response.status, 200, `${model} ${endpoint} stream=${stream}`);
         const body = await response.text();

@@ -14,7 +14,9 @@ export function responsesBody(request: GenerationRequest, model: string): JsonOb
       content = [];
     };
     for (const part of message.content) {
-      if (part.type === "text") content.push({ type: "input_text", text: part.text });
+      // Replayed assistant output keeps its Responses content type, including
+      // commentary interleaved with tool calls on later native Codex turns.
+      if (part.type === "text") content.push({ type: message.role === "assistant" ? "output_text" : "input_text", text: part.text });
       else if (part.type === "image") content.push({ type: "input_image", image_url: part.url, detail: "auto" });
       else {
         flush();

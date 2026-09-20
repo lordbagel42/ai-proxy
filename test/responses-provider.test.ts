@@ -49,15 +49,45 @@ describe("Responses upstream request", () => {
     expect(body).toMatchObject({ model: "upstream-codex", store: false, stream: true, max_output_tokens: 4096, instructions: "Be helpful.", parallel_tool_calls: false,
       tool_choice: { type: "function", name: "read_file" }, tools: [{ type: "function", strict: false, name: "read_file", parameters: r.tools[0]!.parameters }] });
     expect(body.input).toEqual([
-      { role: "assistant", content: [{ type: "input_text", text: "Reading" }] },
+      { role: "assistant", content: [{ type: "output_text", text: "Reading" }] },
       { type: "function_call", call_id: "call_old", name: "read_file", arguments: '{"path":"old.txt"}' },
-      { role: "assistant", content: [{ type: "input_text", text: "Wait" }] },
+      { role: "assistant", content: [{ type: "output_text", text: "Wait" }] },
       { type: "function_call_output", call_id: "call_old", output: "Old file" },
       { role: "user", content: [{ type: "input_text", text: "Now this" }, { type: "input_image", image_url: "https://example.com/image.png", detail: "auto" }] },
     ]);
   });
   it("rejects unsupported stop sequences instead of dropping them", () => {
     expect(() => responsesBody({ ...request(), stop: ["END"] }, "codex")).toThrow("stop sequences");
+  });
+  it("replays assistant commentary and mixed custom/function tool history with role-correct text", () => {
+    const r = parseRequest({ model: "codex", input: [
+      { type: "additional_tools", role: "developer", tools: [{ type: "namespace", name: "functions", tools: [
+        { type: "custom", name: "apply_patch" },
+        { type: "function", name: "exec_command", parameters: { type: "object", properties: { cmd: { type: "string" } } } },
+      ] }] },
+      { role: "user", content: [{ type: "input_text", text: "Write and read proof.txt." }] },
+      { type: "message", role: "assistant", phase: "commentary", content: [{ type: "output_text", text: "Creating the file." }] },
+      { type: "custom_tool_call", namespace: "functions", name: "apply_patch", call_id: "call_patch", input: "*** Begin Patch\n*** Add File: proof.txt\n+relay-tool-ok\n*** End Patch" },
+      { type: "custom_tool_call_output", call_id: "call_patch", output: [{ type: "input_text", text: "Success" }] },
+      { type: "message", role: "assistant", phase: "commentary", content: [{ type: "output_text", text: "Reading the file." }] },
+      { type: "function_call", namespace: "functions", name: "exec_command", call_id: "call_read", arguments: '{"cmd":"sed -n \'1p\' proof.txt"}' },
+      { type: "function_call_output", call_id: "call_read", output: "relay-tool-ok" },
+      { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: "Done." }] },
+      { role: "user", content: "Continue." },
+    ] }, "responses");
+    const body = responsesBody(r, "real-model");
+    expect(body.input).toEqual([
+      { role: "user", content: [{ type: "input_text", text: "Write and read proof.txt." }] },
+      { role: "assistant", phase: "commentary", content: [{ type: "output_text", text: "Creating the file." }] },
+      { type: "function_call", name: "functions__apply_patch", call_id: "call_patch", arguments: JSON.stringify({ input: "*** Begin Patch\n*** Add File: proof.txt\n+relay-tool-ok\n*** End Patch" }) },
+      { type: "function_call_output", call_id: "call_patch", output: "Success" },
+      { role: "assistant", phase: "commentary", content: [{ type: "output_text", text: "Reading the file." }] },
+      { type: "function_call", name: "functions__exec_command", call_id: "call_read", arguments: '{"cmd":"sed -n \'1p\' proof.txt"}' },
+      { type: "function_call_output", call_id: "call_read", output: "relay-tool-ok" },
+      { role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: "Done." }] },
+      { role: "user", content: [{ type: "input_text", text: "Continue." }] },
+    ]);
+    expect((body.tools as JsonObject[]).map(tool => tool.name)).toEqual(["functions__apply_patch", "functions__exec_command"]);
   });
   it("forwards reasoning settings and assistant phases to the Responses backend", () => {
     const r = parseRequest({ model: "codex", reasoning: { effort: "high", summary: "concise", context: "all_turns" }, input: [
